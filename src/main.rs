@@ -1,6 +1,7 @@
 use rand::prelude::*;
 use rayon::prelude::*;
 use std::iter::*;
+use rand_chacha::ChaCha8Rng;
 
 type Point = (f64, f64);
 
@@ -92,62 +93,49 @@ impl Space {
         self.test_with_dist_fn(start, end, &dist)
     }
 
-    fn permute(&self, grid_density: usize, random_placement: bool) -> f64 {
+    fn permute<T>(&self, grid_density: usize, random_placement: &mut Option<T>) -> f64 where T: Rng {
         let cell_width = (self.bounds.1.0 - self.bounds.0.0) / grid_density as f64;
         let cell_height = (self.bounds.1.1 - self.bounds.0.1) / grid_density as f64;
-        let total: f64 = GridIter::between(&(0, 0), &(grid_density, grid_density)).collect::<Vec<_>>().par_iter().map(|(start_x, start_y)| {
-            let mut rng = rand::thread_rng();
-            let mut semitotal = 0.0;
-            let mut start = (self.bounds.0.0 + cell_width * *start_x as f64, self.bounds.0.1 + cell_height * *start_y as f64);
-            if random_placement {
-                start.0 += rng.gen::<f64>() * cell_width;
-                start.1 += rng.gen::<f64>() * cell_height;
-            } else {
-                start.0 += cell_width / 2f64;
-                start.1 += cell_height / 2f64;
-            }
-            for (end_x, end_y) in GridIter::between(&(0, 0), &(grid_density, grid_density)) {
-                let mut end = (self.bounds.0.0 + cell_width * end_x as f64, self.bounds.0.1 + cell_height * end_y as f64);
-
-                if random_placement {
-                    end.0 += rng.gen::<f64>() * cell_width;
-                    end.1 += rng.gen::<f64>() * cell_height;
-                } else {
-                    end.0 += cell_width / 2f64;
-                    end.1 += cell_height / 2f64;
-                }
-
-                semitotal += self.test(&start, &end);
-            }
-            semitotal
+        let offsets = GridIter::between(&(0, 0), &(grid_density, grid_density)).map(|_| match random_placement {
+            None => (cell_width / 2f64, cell_height / 2f64),
+            Some(rng) => (rng.gen::<f64>() * cell_width, rng.gen::<f64>() * cell_height)
+        }).collect::<Vec<Point>>();
+        let total: f64 = GridIter::between(&(0, 0), &(grid_density, grid_density)).collect::<Vec<_>>().par_iter().enumerate().map(|(si, (start_x, start_y))| {
+            let start = (self.bounds.0.0 + cell_width * *start_x as f64 + offsets[si].0, self.bounds.0.1 + cell_height * *start_y as f64 + offsets[si].1);
+            GridIter::between(&(0, 0), &(grid_density, grid_density)).enumerate().map(|(ei, (end_x, end_y))| {
+                let end = (self.bounds.0.0 + cell_width * end_x as f64 + offsets[ei].0, self.bounds.0.1 + cell_height * end_y as f64 + offsets[ei].1);
+                self.test(&start, &end)
+            }).sum::<f64>()
         }).sum();
         total / grid_density.pow(4) as f64
     }
 
-    fn gradient_descent(&mut self, density: usize, temperature: f64, attenuation: f64) -> Vec<(f64, Point, Point)> {
+    fn gradient_descent(&mut self, density: usize, random_placement: bool, temperature: f64, epsilon: f64) -> Vec<(f64, Point, Point)> {
         let mut otherself = self.clone();
+        let iteration_seed = rand::random::<u64>();
+        let get_rng = || if random_placement { Some::<ChaCha8Rng>(SeedableRng::seed_from_u64(iteration_seed)) } else { None };
         self.holes.iter_mut().enumerate().map(|(i, hole)| {
-            let neutral = otherself.permute(density, true);
+            let neutral = otherself.permute::<ChaCha8Rng>(density, &mut get_rng());
 
-            otherself.holes[i].0.0 = hole.0.0 + attenuation;
-            let start_x_gradient = otherself.permute(density, true);
+            otherself.holes[i].0.0 = hole.0.0 + epsilon;
+            let start_x_gradient = otherself.permute::<ChaCha8Rng>(density, &mut get_rng());
 
             otherself.holes[i].0.0 = hole.0.0;
-            otherself.holes[i].0.1 = hole.0.1 + attenuation;
-            let start_y_gradient = otherself.permute(density, true);
+            otherself.holes[i].0.1 = hole.0.1 + epsilon;
+            let start_y_gradient = otherself.permute::<ChaCha8Rng>(density, &mut get_rng());
 
             otherself.holes[i].0.1 = hole.0.1;
-            otherself.holes[i].1.0 = hole.1.0 + attenuation;
-            let end_x_gradient = otherself.permute(density, true);
+            otherself.holes[i].1.0 = hole.1.0 + epsilon;
+            let end_x_gradient = otherself.permute::<ChaCha8Rng>(density, &mut get_rng());
 
             otherself.holes[i].1.0 = hole.1.0;
-            otherself.holes[i].1.1 = hole.1.1 + attenuation;
-            let end_y_gradient = otherself.permute(density, true);
+            otherself.holes[i].1.1 = hole.1.1 + epsilon;
+            let end_y_gradient = otherself.permute::<ChaCha8Rng>(density, &mut get_rng());
 
             otherself.holes[i].1.1 = hole.1.1;
 
-            let start_gradient = (neutral - start_x_gradient, neutral - start_y_gradient);
-            let end_gradient = (neutral - end_x_gradient, neutral - end_y_gradient);
+            let start_gradient = ((neutral - start_x_gradient) / epsilon, (neutral - start_y_gradient) / epsilon);
+            let end_gradient = ((neutral - end_x_gradient) / epsilon, (neutral - end_y_gradient) / epsilon);
 
             hole.0.0 += start_gradient.0 * temperature;
             hole.0.1 += start_gradient.1 * temperature;
@@ -166,9 +154,9 @@ fn main() {
     space.holes.push(((0.0, 0.0), (1.0, 1.0)));
     for i in 1.. {
 
-        let results = space.gradient_descent(64, 100.0 as f64, 0.1 / i as f64);
+        let results = space.gradient_descent(128, true, 4.0 / i as f64 as f64, 0.000001);
         let (score, start_g, end_g) = results.first().unwrap();
-        println!("Iteration {}: score: {:.5}, hole: {:?}, start gradient of {:?}, end gradient of {:?}", i, score, space.holes[0], start_g, end_g);
+        println!("Iteration {}: score: {:.5}, hole: {:?}, gradients: {:?}", i, score, space.holes[0], (start_g, end_g));
 
         // let result = space.permute(128, true);
         // avg += result;
