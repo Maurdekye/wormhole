@@ -4,7 +4,8 @@ use imageproc::map::map_pixels;
 use rand::prelude::*;
 use rand_chacha::ChaCha8Rng;
 use rayon::prelude::*;
-use std::{iter::*, fs};
+use core::panic;
+use std::{fs, iter::*};
 
 type Position = (f64, f64);
 
@@ -18,7 +19,7 @@ struct Space {
 fn sq_dist(a: &Position, b: &Position) -> f64 {
     let dx = a.0 - b.0;
     let dy = a.1 - b.1;
-    dx * dx + dy * dy
+    dx.hypot(dy)
 }
 
 fn dist(a: &Position, b: &Position) -> f64 {
@@ -104,6 +105,42 @@ impl Space {
         self.test_with_dist_fn(start, end, &dist)
     }
 
+    fn test_with_multi_travel(&self, start: &Position, end: &Position) -> f64 {
+        let mut traveled = 0.0;
+        let mut current_pos = start.clone();
+        let mut direct = dist(&current_pos, end);
+        for _ in 0..self.holes.len()+1 {
+            match self
+                .holes
+                .iter()
+                .map(|hole| {
+                    let hole_travel = if self.hole_multiplier > 0.0 {
+                        dist(&hole.0, &hole.1) * self.hole_multiplier
+                    } else {
+                        0.0
+                    };
+                    [
+                        (dist(&hole.0, &current_pos) + hole_travel, dist(&hole.1, &end), &hole.1),
+                        (dist(&hole.1, &current_pos) + hole_travel, dist(&hole.0, &end), &hole.0),
+                    ]
+                })
+                .flatten()
+                .filter(|(travel, new_dist, _)| travel + new_dist < direct)
+                .min_by(|(_, new_dist_a, _), (_, new_dist_b, _)| new_dist_a.partial_cmp(new_dist_b).unwrap()) {
+                    None => {
+                        traveled += direct;
+                        break;
+                    },
+                    Some((travel, new_direct, new_pos)) => {
+                        current_pos = new_pos.clone();
+                        traveled += travel;
+                        direct = new_direct;
+                    }
+                }
+        }
+        traveled
+    }
+
     fn permute<T>(&self, grid_density: usize, random_placement: &mut Option<T>) -> f64
     where
         T: Rng,
@@ -135,7 +172,7 @@ impl Space {
                             self.bounds.0 .0 + cell_width * end_x as f64 + offsets[ei].0,
                             self.bounds.0 .1 + cell_height * end_y as f64 + offsets[ei].1,
                         );
-                        self.test_with_dist_fn(&start, &end, &dist)
+                        self.test_with_multi_travel(&start, &end)
                     })
                     .sum::<f64>()
             })
@@ -214,7 +251,10 @@ impl Space {
         let center = ((dims.0 / 2) as f32, (dims.1 / 2) as f32);
         let max_distance = f32::hypot(center.0, center.1);
         let mut img = map_pixels(&RgbImage::new(dims.0, dims.1), |x, y, _| {
-            let dist: f32 = f32::hypot((x as i32 - center.0 as i32) as f32, (y as i32 - center.1 as i32) as f32);
+            let dist: f32 = f32::hypot(
+                (x as i32 - center.0 as i32) as f32,
+                (y as i32 - center.1 as i32) as f32,
+            );
             let factor = (max_distance - dist) / max_distance;
             let tan = Rgb([210, 180, 140]);
             Rgb([
@@ -223,8 +263,18 @@ impl Space {
                 (255.0 * factor + tan[2] as f32 * (1.0 - factor)) as u8,
             ])
         });
-        draw_line_segment_mut(&mut img, (0.0, center.1), (dims.0 as f32, center.1), Rgb([220, 220, 220]));
-        draw_line_segment_mut(&mut img, (center.0, 0.0), (center.0, dims.1 as f32), Rgb([220, 220, 220]));
+        draw_line_segment_mut(
+            &mut img,
+            (0.0, center.1),
+            (dims.0 as f32, center.1),
+            Rgb([220, 220, 220]),
+        );
+        draw_line_segment_mut(
+            &mut img,
+            (center.0, 0.0),
+            (center.0, dims.1 as f32),
+            Rgb([220, 220, 220]),
+        );
         for hole in self.holes.iter() {
             let (start, end) = hole;
             let (bound_width, bound_height) = (
@@ -239,8 +289,18 @@ impl Space {
                 (((end.0 - self.bounds.0 .0) / bound_width) * dims.0 as f64) as f32,
                 (((end.1 - self.bounds.0 .1) / bound_height) * dims.1 as f64) as f32,
             );
-            draw_filled_circle_mut(&mut img, (|(a,b)|(a as i32, b as i32))(start_pixel), 2, Rgb([0, 0, 0]));
-            draw_filled_circle_mut(&mut img, (|(a,b)|(a as i32, b as i32))(end_pixel), 2, Rgb([0, 0, 0]));
+            draw_filled_circle_mut(
+                &mut img,
+                (|(a, b)| (a as i32, b as i32))(start_pixel),
+                2,
+                Rgb([0, 0, 0]),
+            );
+            draw_filled_circle_mut(
+                &mut img,
+                (|(a, b)| (a as i32, b as i32))(end_pixel),
+                2,
+                Rgb([0, 0, 0]),
+            );
             draw_line_segment_mut(&mut img, start_pixel, end_pixel, Rgb([128, 128, 128]));
         }
         img
@@ -248,14 +308,19 @@ impl Space {
 }
 
 fn main() -> std::io::Result<()> {
-    let mut space = Space::new();
-    space.holes.push(((0.0, 0.0), (1.0, 0.0)));
     fs::create_dir_all("output")?;
-    space.holes.push(((0.0, 1.0), (1.0, 1.0)));
+    let mut space = Space::new();
+    // space.holes.push(((0.0, 0.0), (1.0, 1.0)));
+    // space.holes.push(((0.6, 0.5), (0.9, 0.5)));
+    let t = 2;
+    for i in 1..=t {
+        let x = i as f64 / (t + 1) as f64;
+        space.holes.push(((x, 0.35), (x, 0.65)));
+    }
     for i in 1.. {
         // let temp = 1.01f64.powi(-i);
         let temp = 1.0;
-        let (loss, _) = space.gradient_descent(128, false, temp, 1e-10);
+        let (loss, _) = space.gradient_descent(64, true, temp, 1e-10);
         println!(
             "Iteration {}: temp: {:.3}, loss: {:.10}, holes:",
             i, temp, loss
