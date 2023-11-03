@@ -1,29 +1,19 @@
+use core::panic;
 use image::{ImageBuffer, Rgb, RgbImage};
 use imageproc::drawing::{draw_filled_circle_mut, draw_line_segment_mut};
 use imageproc::map::map_pixels;
 use rand::prelude::*;
 use rand_chacha::ChaCha8Rng;
 use rayon::prelude::*;
-use core::panic;
+use std::f32::consts;
 use std::{fs, iter::*};
 
 type Position = (f64, f64);
 
-#[derive(Clone, Debug)]
-struct Space {
-    bounds: (Position, Position),
-    holes: Vec<(Position, Position)>,
-    hole_multiplier: f64,
-}
-
-fn sq_dist(a: &Position, b: &Position) -> f64 {
+fn dist(a: &Position, b: &Position) -> f64 {
     let dx = a.0 - b.0;
     let dy = a.1 - b.1;
     dx.hypot(dy)
-}
-
-fn dist(a: &Position, b: &Position) -> f64 {
-    sq_dist(a, b).sqrt()
 }
 
 struct GridIter {
@@ -66,6 +56,13 @@ impl Iterator for GridIter {
     }
 }
 
+#[derive(Clone, Debug)]
+struct Space {
+    bounds: (Position, Position),
+    holes: Vec<(Position, Position)>,
+    hole_multiplier: f64,
+}
+
 impl Space {
     fn new() -> Space {
         Space {
@@ -75,22 +72,17 @@ impl Space {
         }
     }
 
-    fn test_with_dist_fn(
-        &self,
-        start: &Position,
-        end: &Position,
-        dist_fn: &dyn Fn(&Position, &Position) -> f64,
-    ) -> f64 {
-        let mut travel_dist = dist_fn(start, end);
+    fn test(&self, start: &Position, end: &Position) -> f64 {
+        let mut travel_dist = dist(start, end);
         for (hole_a, hole_b) in self.holes.iter() {
-            let a_dist = dist_fn(start, hole_a);
-            let b_dist = dist_fn(start, hole_b);
+            let a_dist = dist(start, hole_a);
+            let b_dist = dist(start, hole_b);
             let hole_dist = if a_dist < b_dist {
-                a_dist + dist_fn(hole_b, end)
+                a_dist + dist(hole_b, end)
             } else {
-                b_dist + dist_fn(hole_a, end)
+                b_dist + dist(hole_a, end)
             } + if self.hole_multiplier > f64::default() {
-                dist_fn(hole_a, hole_b)
+                dist(hole_a, hole_b)
             } else {
                 f64::default()
             };
@@ -101,15 +93,11 @@ impl Space {
         travel_dist
     }
 
-    fn test(&self, start: &Position, end: &Position) -> f64 {
-        self.test_with_dist_fn(start, end, &dist)
-    }
-
     fn test_with_multi_travel(&self, start: &Position, end: &Position) -> f64 {
         let mut traveled = 0.0;
         let mut current_pos = start.clone();
         let mut direct = dist(&current_pos, end);
-        for _ in 0..self.holes.len()+1 {
+        for _ in 0..self.holes.len() + 1 {
             match self
                 .holes
                 .iter()
@@ -120,23 +108,33 @@ impl Space {
                         0.0
                     };
                     [
-                        (dist(&hole.0, &current_pos) + hole_travel, dist(&hole.1, &end), &hole.1),
-                        (dist(&hole.1, &current_pos) + hole_travel, dist(&hole.0, &end), &hole.0),
+                        (
+                            dist(&hole.0, &current_pos) + hole_travel,
+                            dist(&hole.1, &end),
+                            &hole.1,
+                        ),
+                        (
+                            dist(&hole.1, &current_pos) + hole_travel,
+                            dist(&hole.0, &end),
+                            &hole.0,
+                        ),
                     ]
                 })
                 .flatten()
                 .filter(|(travel, new_dist, _)| travel + new_dist < direct)
-                .min_by(|(_, new_dist_a, _), (_, new_dist_b, _)| new_dist_a.partial_cmp(new_dist_b).unwrap()) {
-                    None => {
-                        traveled += direct;
-                        break;
-                    },
-                    Some((travel, new_direct, new_pos)) => {
-                        current_pos = new_pos.clone();
-                        traveled += travel;
-                        direct = new_direct;
-                    }
+                .min_by(|(_, new_dist_a, _), (_, new_dist_b, _)| {
+                    new_dist_a.partial_cmp(new_dist_b).unwrap()
+                }) {
+                None => {
+                    traveled += direct;
+                    break;
                 }
+                Some((travel, new_direct, new_pos)) => {
+                    current_pos = new_pos.clone();
+                    traveled += travel;
+                    direct = new_direct;
+                }
+            }
         }
         traveled
     }
@@ -312,21 +310,49 @@ fn main() -> std::io::Result<()> {
     let mut space = Space::new();
     // space.holes.push(((0.0, 0.0), (1.0, 1.0)));
     // space.holes.push(((0.6, 0.5), (0.9, 0.5)));
-    let t = 2;
-    for i in 1..=t {
-        let x = i as f64 / (t + 1) as f64;
-        space.holes.push(((x, 0.35), (x, 0.65)));
+    // let t = 3;
+    // for i in 1..=t {
+    //     let x = i as f64 / (t + 1) as f64;
+    //     space.holes.push(((x, 0.35), (x, 0.65)));
+    // }
+    for _ in 0..3 {
+        let length = 0.02;
+        let center: (f64, f64) = (rand::random(), rand::random());
+        let angle: f64 = rand::random::<f64>() * std::f64::consts::PI * 2.0;
+        let (s, c) = angle.sin_cos();
+        let radius = (length * s, length * c);
+        let start = (center.0 + radius.0, center.1 + radius.1);
+        let end = (center.0 - radius.0, center.1 - radius.1);
+        space.holes.push((start, end));
     }
     for i in 1.. {
         // let temp = 1.01f64.powi(-i);
         let temp = 1.0;
-        let (loss, _) = space.gradient_descent(64, true, temp, 1e-10);
+        let (loss, gradients) = space.gradient_descent(96, true, temp, 1e-10);
+        let gradient_magnitudes = gradients
+            .iter()
+            .map(|(a, b)| [dist(a, &(0.0, 0.0)).log10(), dist(b, &(0.0, 0.0)).log10()])
+            .flatten()
+            .collect::<Vec<_>>();
         println!(
-            "Iteration {}: temp: {:.3}, loss: {:.10}, holes:",
-            i, temp, loss
+            "Iteration {}: temp: {:.3}, loss: {:.10}, gradients: {}",
+            i,
+            temp,
+            loss,
+            gradient_magnitudes
+                .iter()
+                .map(|f| format!("{:.2}", f))
+                .collect::<Vec<_>>()
+                .join(", ")
         );
-        for hole in space.holes.iter() {
-            println!("{:?}", hole);
+        if gradient_magnitudes
+            .iter()
+            .max_by(|a, b| a.partial_cmp(b).unwrap())
+            .unwrap()
+            < &-4.5
+        {
+            println!("Gradients settled, ending simulation");
+            break;
         }
         let img = space.render();
         img.save(format!("output/iter-{}.png", i)).unwrap();
