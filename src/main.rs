@@ -151,12 +151,13 @@ impl Space {
 
 fn main() {
     let mut space = Space::new();
-    space.holes.push(((0.0, 0.0), (1.0, 1.0)));
+    space.holes.push(((0.0, 0.5), (1.0, 0.5)));
     for i in 1.. {
 
-        let results = space.gradient_descent(128, true, 4.0 / i as f64 as f64, 0.000001);
+        let temp = 1.01f64.powi(-i);
+        let results = space.gradient_descent(128, true, temp, 1e-10);
         let (score, start_g, end_g) = results.first().unwrap();
-        println!("Iteration {}: score: {:.5}, hole: {:?}, gradients: {:?}", i, score, space.holes[0], (start_g, end_g));
+        println!("Iteration {}: temp: {:.3}, score: {:.5}, hole: {:?}, gradient magnitudes: {:?}", i, temp, score, space.holes[0], [start_g, end_g].into_iter().map(|x| format!("{:.2}", dist(&(0.0,0.0), &x).log10())).collect::<Vec<_>>());
 
         // let result = space.permute(128, true);
         // avg += result;
