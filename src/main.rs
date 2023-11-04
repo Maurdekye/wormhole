@@ -1,4 +1,5 @@
 use core::panic;
+use std::fs::{OpenOptions, File};
 use image::{ImageBuffer, Rgb, RgbImage};
 use imageproc::drawing::{draw_filled_circle_mut, draw_line_segment_mut};
 use imageproc::map::map_pixels;
@@ -7,6 +8,7 @@ use rand_chacha::ChaCha8Rng;
 use rayon::prelude::*;
 use std::f32::consts;
 use std::{fs, iter::*};
+use std::io::prelude::*;
 
 type Position = (f64, f64);
 
@@ -14,6 +16,7 @@ fn dist(a: &Position, b: &Position) -> f64 {
     let dx = a.0 - b.0;
     let dy = a.1 - b.1;
     dx.hypot(dy)
+    // dx.abs() + dy.abs()
 }
 
 struct GridIter {
@@ -217,12 +220,12 @@ impl Space {
                 otherself.holes[i].1 .1 = hole.1 .1;
 
                 let start_gradient = (
-                    (neutral - start_x_gradient) / epsilon,
-                    (neutral - start_y_gradient) / epsilon,
+                    if neutral == start_x_gradient { 0.0 } else { (neutral - start_x_gradient) / epsilon },
+                    if neutral == start_y_gradient { 0.0 } else { (neutral - start_y_gradient) / epsilon }
                 );
                 let end_gradient = (
-                    (neutral - end_x_gradient) / epsilon,
-                    (neutral - end_y_gradient) / epsilon,
+                    if neutral == end_x_gradient { 0.0 } else { (neutral - end_x_gradient) / epsilon },
+                    if neutral == end_y_gradient { 0.0 } else { (neutral - end_y_gradient) / epsilon }
                 );
 
                 (start_gradient, end_gradient)
@@ -315,7 +318,7 @@ fn main() -> std::io::Result<()> {
     //     let x = i as f64 / (t + 1) as f64;
     //     space.holes.push(((x, 0.35), (x, 0.65)));
     // }
-    for _ in 0..3 {
+    for _ in 0..2 {
         let length = 0.02;
         let center: (f64, f64) = (rand::random(), rand::random());
         let angle: f64 = rand::random::<f64>() * std::f64::consts::PI * 2.0;
@@ -325,10 +328,11 @@ fn main() -> std::io::Result<()> {
         let end = (center.0 - radius.0, center.1 - radius.1);
         space.holes.push((start, end));
     }
+    let mut logfile = File::create("log.txt")?;
     for i in 1.. {
         // let temp = 1.01f64.powi(-i);
-        let temp = 1.0;
-        let (loss, gradients) = space.gradient_descent(96, true, temp, 1e-10);
+        let temp = 0.1;
+        let (loss, gradients) = space.gradient_descent(64, true, temp, 1e-10);
         let gradient_magnitudes = gradients
             .iter()
             .map(|(a, b)| [dist(a, &(0.0, 0.0)).log10(), dist(b, &(0.0, 0.0)).log10()])
@@ -345,11 +349,12 @@ fn main() -> std::io::Result<()> {
                 .collect::<Vec<_>>()
                 .join(", ")
         );
+        writeln!(logfile, "{},{},{},{:?},{:?}", i, temp, loss, space.holes, gradients)?;
         if gradient_magnitudes
             .iter()
             .max_by(|a, b| a.partial_cmp(b).unwrap())
             .unwrap()
-            < &-4.5
+            < &-4.0
         {
             println!("Gradients settled, ending simulation");
             break;
