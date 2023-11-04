@@ -7,7 +7,7 @@ use imageproc::map::map_pixels;
 use rand::prelude::*;
 use rand_chacha::ChaCha8Rng;
 use rayon::prelude::*;
-use std::f32::consts;
+use std::f32::consts::{self, PI};
 use std::{fs, iter::*};
 use std::io::prelude::*;
 
@@ -98,6 +98,20 @@ impl Space {
             let x = i as f64 / (n + 1) as f64;
             ((x, 0.35), (x, 0.65))
         }).collect())
+    }
+
+    fn new_with_polyhedra_holes(n: usize) -> Space {
+        Space::new_with_holes((1..=n).map(|i| {
+            let angle_start = (i as f64 / n as f64) * 2.0 * std::f64::consts::PI;
+            let (s_a, c_a) = angle_start.sin_cos();
+            let angle_end = ((i+1) as f64 / n as f64) * 2.0 * std::f64::consts::PI;
+            let (s_b, c_b) = angle_end.sin_cos();
+            ((0.5 + s_a / 4.0, 0.5 + c_a / 4.0), (0.5 + s_b / 4.0, 0.5 + c_b / 4.0))
+        }).collect())
+    }
+
+    fn new_with_star_holes(n: usize) -> Space {
+        todo!()
     }
 
     fn test(&self, start: &Position, end: &Position) -> f64 {
@@ -333,18 +347,12 @@ impl Space {
     }
 }
 
-fn main() -> std::io::Result<()> {
-    let mut space = Space::new_with_holes(vec![
-        ((0.25, 0.5), (0.75, 0.5)),
-        ((0.5, 0.25), (0.5, 0.75)),
-        ((0.25, 0.25), (0.75, 0.75)),
-        ((0.25, 0.75), (0.75, 0.25))
-    ]);
-
-    fs::create_dir_all("output")?;
-    let mut logfile = File::create("log.txt")?;
+fn train_and_save(space: &mut Space, name: String, iters: usize) -> std::io::Result<()> {
+    println!("Beginning training of {}", name);
+    fs::create_dir_all(format!("output/{}/", name))?;
+    let mut logfile = File::create(format!("output/{}.log", name))?;
     let mut timestamp = SystemTime::now();
-    for i in 1.. {
+    for i in 1..iters {
         // let temp = 1.01f64.powi(-i);
         let temp = 0.1;
         let (loss, gradients) = space.gradient_descent(64, true, temp, 1e-10);
@@ -379,7 +387,22 @@ fn main() -> std::io::Result<()> {
             break;
         }
         let img = space.render();
-        img.save(format!("output/iter-{}.png", i)).unwrap();
+        img.save(format!("output/{}/iter-{}.png", name, i)).unwrap();
+    }
+    Ok(())
+}
+
+fn main() -> std::io::Result<()> {
+    for (mut space, name) in vec![
+        (Space::new_with_holes(vec![
+            ((0.25, 0.5), (0.75, 0.5)),
+            ((0.5, 0.25), (0.5, 0.75)),
+            ((0.25, 0.25), (0.75, 0.75)),
+            ((0.25, 0.75), (0.75, 0.25))
+        ]), "asterisk"),
+        (Space::new_with_polyhedra_holes(5), "pentagon")
+    ] {
+        train_and_save(&mut space, name.to_string(), 1000)?;
     }
     Ok(())
 }
