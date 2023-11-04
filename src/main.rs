@@ -68,12 +68,36 @@ struct Space {
 }
 
 impl Space {
-    fn new() -> Space {
+    fn new_with_holes(holes: Vec<(Position, Position)>) -> Space {
         Space {
             bounds: ((0.0, 0.0), (1.0, 1.0)),
-            holes: Vec::new(),
+            holes: holes,
             hole_multiplier: 0.0,
         }
+    }
+
+    fn new() -> Space {
+        Space::new_with_holes(Vec::new())
+    }
+
+    fn new_with_random_holes(n: usize) -> Space {
+        Space::new_with_holes((0..n).map(|_| {
+            let length = 0.02;
+            let center: (f64, f64) = (rand::random(), rand::random());
+            let angle: f64 = rand::random::<f64>() * std::f64::consts::PI * 2.0;
+            let (s, c) = angle.sin_cos();
+            let radius = (length * s, length * c);
+            let start = (center.0 + radius.0, center.1 + radius.1);
+            let end = (center.0 - radius.0, center.1 - radius.1);
+            (start, end)
+        }).collect())
+    }
+
+    fn new_with_aligned_holes(n: usize) -> Space {
+        Space::new_with_holes((1..=n).map(|i| {
+            let x = i as f64 / (n + 1) as f64;
+            ((x, 0.35), (x, 0.65))
+        }).collect())
     }
 
     fn test(&self, start: &Position, end: &Position) -> f64 {
@@ -310,25 +334,14 @@ impl Space {
 }
 
 fn main() -> std::io::Result<()> {
+    let mut space = Space::new_with_holes(vec![
+        ((0.25, 0.5), (0.75, 0.5)),
+        ((0.5, 0.25), (0.5, 0.75)),
+        ((0.25, 0.25), (0.75, 0.75)),
+        ((0.25, 0.75), (0.75, 0.25))
+    ]);
+
     fs::create_dir_all("output")?;
-    let mut space = Space::new();
-    // space.holes.push(((0.0, 0.0), (1.0, 1.0)));
-    // space.holes.push(((0.6, 0.5), (0.9, 0.5)));
-    // let t = 3;
-    // for i in 1..=t {
-    //     let x = i as f64 / (t + 1) as f64;
-    //     space.holes.push(((x, 0.35), (x, 0.65)));
-    // }
-    for _ in 0..2 {
-        let length = 0.02;
-        let center: (f64, f64) = (rand::random(), rand::random());
-        let angle: f64 = rand::random::<f64>() * std::f64::consts::PI * 2.0;
-        let (s, c) = angle.sin_cos();
-        let radius = (length * s, length * c);
-        let start = (center.0 + radius.0, center.1 + radius.1);
-        let end = (center.0 - radius.0, center.1 - radius.1);
-        space.holes.push((start, end));
-    }
     let mut logfile = File::create("log.txt")?;
     let mut timestamp = SystemTime::now();
     for i in 1.. {
