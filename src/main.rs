@@ -347,15 +347,13 @@ impl Space {
     }
 }
 
-fn train_and_save(space: &mut Space, name: String, iters: usize) -> std::io::Result<()> {
+fn train_and_save(space: &mut Space, name: String, iters: usize, learn_rate: f64, epoch_size: usize) -> std::io::Result<()> {
     println!("Beginning training of {}", name);
     fs::create_dir_all(format!("output/{}/", name))?;
     let mut logfile = File::create(format!("output/{}.log", name))?;
     let mut timestamp = SystemTime::now();
     for i in 1..iters {
-        // let temp = 1.01f64.powi(-i);
-        let temp = 0.1;
-        let (loss, gradients) = space.gradient_descent(64, true, temp, 1e-10);
+        let (loss, gradients) = space.gradient_descent(epoch_size, true, learn_rate, 1e-10);
         let gradient_magnitudes = gradients
             .iter()
             .map(|(a, b)| [dist(a, &(0.0, 0.0)).log10(), dist(b, &(0.0, 0.0)).log10()])
@@ -365,10 +363,9 @@ fn train_and_save(space: &mut Space, name: String, iters: usize) -> std::io::Res
         let delta = new_time.duration_since(timestamp).unwrap();
         timestamp = new_time;
         println!(
-            "Iteration {}: took: {:.4}s, temp: {:.3}, loss: {:.10}, gradients: {}",
+            "Iteration {}: took: {:.4}s, loss: {:.10}, gradients: {}",
             i,
             delta.as_secs_f64(),
-            temp,
             loss,
             gradient_magnitudes
                 .iter()
@@ -376,7 +373,7 @@ fn train_and_save(space: &mut Space, name: String, iters: usize) -> std::io::Res
                 .collect::<Vec<_>>()
                 .join(", ")
         );
-        writeln!(logfile, "{},{},{},{},{:?},{:?}", i, timestamp.duration_since(UNIX_EPOCH).unwrap().as_millis(), temp, loss, space.holes, gradients)?;
+        writeln!(logfile, "{},{},{},{:?},{:?}", i, timestamp.duration_since(UNIX_EPOCH).unwrap().as_millis(), loss, space.holes, gradients)?;
         if gradient_magnitudes
             .iter()
             .max_by(|a, b| a.partial_cmp(b).unwrap())
@@ -402,7 +399,7 @@ fn main() -> std::io::Result<()> {
         ]), "asterisk"),
         (Space::new_with_polyhedra_holes(5), "pentagon")
     ] {
-        train_and_save(&mut space, name.to_string(), 1000)?;
+        train_and_save(&mut space, name.to_string(), 1000, 0.1, 64)?;
     }
     Ok(())
 }
