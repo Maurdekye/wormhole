@@ -1,5 +1,6 @@
 use core::panic;
 use std::fs::{OpenOptions, File};
+use std::time::{SystemTime, UNIX_EPOCH};
 use image::{ImageBuffer, Rgb, RgbImage};
 use imageproc::drawing::{draw_filled_circle_mut, draw_line_segment_mut};
 use imageproc::map::map_pixels;
@@ -329,6 +330,7 @@ fn main() -> std::io::Result<()> {
         space.holes.push((start, end));
     }
     let mut logfile = File::create("log.txt")?;
+    let mut timestamp = SystemTime::now();
     for i in 1.. {
         // let temp = 1.01f64.powi(-i);
         let temp = 0.1;
@@ -338,9 +340,13 @@ fn main() -> std::io::Result<()> {
             .map(|(a, b)| [dist(a, &(0.0, 0.0)).log10(), dist(b, &(0.0, 0.0)).log10()])
             .flatten()
             .collect::<Vec<_>>();
+        let new_time = SystemTime::now();
+        let delta = new_time.duration_since(timestamp).unwrap();
+        timestamp = new_time;
         println!(
-            "Iteration {}: temp: {:.3}, loss: {:.10}, gradients: {}",
+            "Iteration {}: took: {:.4}s, temp: {:.3}, loss: {:.10}, gradients: {}",
             i,
+            delta.as_secs_f64(),
             temp,
             loss,
             gradient_magnitudes
@@ -349,7 +355,7 @@ fn main() -> std::io::Result<()> {
                 .collect::<Vec<_>>()
                 .join(", ")
         );
-        writeln!(logfile, "{},{},{},{:?},{:?}", i, temp, loss, space.holes, gradients)?;
+        writeln!(logfile, "{},{},{},{},{:?},{:?}", i, timestamp.duration_since(UNIX_EPOCH).unwrap().as_millis(), temp, loss, space.holes, gradients)?;
         if gradient_magnitudes
             .iter()
             .max_by(|a, b| a.partial_cmp(b).unwrap())
