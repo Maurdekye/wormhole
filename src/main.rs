@@ -426,19 +426,26 @@ fn slope(values: &VecDeque<f64>) -> f64 {
 fn train_and_save(
     space: &mut Space,
     name: String,
-    iters: usize,
+    max_iters: Option<usize>,
     learn_rate: f64,
     epoch_size: usize,
     loss_window_size: usize,
     save_video: Option<FfmpegOptions>,
 ) -> std::io::Result<()> {
     println!("Beginning training of {}", name);
+
     fs::create_dir_all(format!("output/{}/", name))?;
     let mut logfile = File::create(format!("output/{}.log", name))?;
+
     let mut timestamp = SystemTime::now();
-    let mut loss_eval_window = VecDeque::with_capacity(loss_window_size);
-    for i in 0..iters {
-        let (loss, seed, gradients, gradient_magnitudes) = if i == 0 {
+    let mut loss_eval_window = VecDeque::with_capacity(loss_window_size + 1);
+
+    for i in 0.. {
+        if max_iters.map(|iters| i > iters).unwrap_or(false) {
+            break;
+        }
+        
+        let (loss, seed, gradients) = if i == 0 {
             // default values to record the 0th iteration
             let seed = rand::random::<u64>();
             (
@@ -448,23 +455,26 @@ fn train_and_save(
                 (0..space.holes.len())
                     .map(|_| ((0.0, 0.0), (0.0, 0.0)))
                     .collect(),
-                (0..(space.holes.len() * 2)).map(|_| 0.0).collect(),
             )
         } else {
             let (loss, seed, gradients) =
-                space.gradient_descent(epoch_size, true, learn_rate, 1e-10, None);
+                space.gradient_descent(epoch_size, true, learn_rate, 1e-8, None);
+            
             loss_eval_window.push_back(loss.log10());
             if loss_eval_window.len() > loss_window_size {
                 loss_eval_window.pop_front();
             }
+
+            let new_time = SystemTime::now();
+            let delta = new_time.duration_since(timestamp).unwrap();
+            timestamp = new_time;
+
             let gradient_magnitudes = gradients
                 .iter()
                 .map(|(a, b)| [dist(a, &(0.0, 0.0)).log10(), dist(b, &(0.0, 0.0)).log10()])
                 .flatten()
                 .collect::<Vec<_>>();
-            let new_time = SystemTime::now();
-            let delta = new_time.duration_since(timestamp).unwrap();
-            timestamp = new_time;
+
             println!(
                 "Iteration {}: took: {:.4}s, loss: {:.10}, gradients: {}",
                 i,
@@ -476,9 +486,12 @@ fn train_and_save(
                     .collect::<Vec<_>>()
                     .join(", ")
             );
-            (loss, seed, gradients, gradient_magnitudes)
+
+            (loss, seed, gradients)
         };
+
         let loss_window_slope = slope(&loss_eval_window);
+
         writeln!(
             logfile,
             "{},{},{},{},{},{:?},{:?}",
@@ -490,11 +503,13 @@ fn train_and_save(
             space.holes,
             gradients
         )?;
-        if loss_eval_window.len() >= loss_window_size && loss_window_slope < 0.01
+
+        if loss_eval_window.len() >= loss_window_size && loss_window_slope.abs() < 1e-7
         {
             println!("Gradients settled, ending simulation");
             break;
         }
+
         let img = space.render();
         img.save(format!("output/{}/iter-{}.png", name, i)).unwrap();
     }
@@ -508,6 +523,7 @@ fn train_and_save(
                     format!("output/{}/iter-%d.png", name).as_str(),
                     "-pix_fmt",
                     "yuv420p",
+                    "-y",
                     format!("output/{}.mp4", name).as_str(),
                 ])
                 .spawn()?;
@@ -519,15 +535,15 @@ fn train_and_save(
 
 fn main() -> std::io::Result<()> {
     for (mut space, name) in vec![
-        (Space::new_with_polyhedra_holes(5, 0.05), "pentagon"),
+        (Space::new_with_random_holes(3), "triple"),
     ] {
         train_and_save(
             &mut space,
             name.to_string(),
-            650,
+            None,
             0.1,
             64,
-            100,
+            120,
             Some(FfmpegOptions { framerate: 60 }),
         )?;
     }
