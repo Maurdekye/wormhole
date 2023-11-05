@@ -654,7 +654,7 @@ fn train_and_save(
             )
         } else {
             let (loss, seed, gradients) =
-                space.gradient_descent(epoch_size, true, learn_rate, IFloat::from(1e-6), None);
+                space.gradient_descent(epoch_size, true, learn_rate, IFloat::from(1e-8), None);
 
             loss_eval_window.push_back(loss.log10());
             if loss_eval_window.len() > loss_window_size {
@@ -738,7 +738,7 @@ fn train_and_save(
 fn main() -> std::io::Result<()> {
     for (mut space, name) in vec![
         // (Space::new_with_star_holes(4), "asterisk_2"),
-        (Space::new_with_random_holes(3), "triple_4"),
+        (Space::new_with_random_holes(3), "triple_5"),
         // (Space::new_with_random_segment_holes(5), "quintouple"),
         // (Space::new_with_random_segment_holes(6), "sextouple"),
         // (Space::new_with_random_segment_holes(7), "septouble"),
