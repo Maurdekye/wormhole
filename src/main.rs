@@ -13,8 +13,8 @@ use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{fs, iter::*};
 
-type IFloatType = i32;
-const SCALE_FACTOR: u32 = 8;
+type IFloatType = i64;
+const SCALE_FACTOR: u32 = 32;
 const MAX: IFloatType = IFloatType::MAX >> ((IFloatType::BITS - 1) - SCALE_FACTOR);
 
 #[derive(Clone, Copy, Debug)]
@@ -35,13 +35,13 @@ impl IFloat {
 
     fn random_with_rng<T: Rng>(rng: &mut T) -> Self {
         IFloat {
-            value: rng.gen::<IFloatType>() % MAX,
+            value: rng.gen::<IFloatType>().abs() % MAX,
         }
     }
 
     fn random() -> Self {
         IFloat {
-            value: rand::random::<IFloatType>() % MAX,
+            value: rand::random::<IFloatType>().abs() % MAX,
         }
     }
 
@@ -142,7 +142,7 @@ impl Mul for IFloat {
 
     fn mul(self, rhs: Self) -> Self::Output {
         IFloat {
-            value: (((self.value as i64) * (rhs.value as i64)) >> SCALE_FACTOR) as IFloatType,
+            value: (((self.value as i128) * (rhs.value as i128)) >> SCALE_FACTOR) as IFloatType,
         }
     }
 }
@@ -152,7 +152,7 @@ impl Div for IFloat {
 
     fn div(self, rhs: Self) -> Self::Output {
         IFloat {
-            value: (((self.value as i64) << SCALE_FACTOR) / rhs.value as i64) as IFloatType,
+            value: (((self.value as i128) << SCALE_FACTOR) / rhs.value as i128) as IFloatType,
         }
     }
 }
@@ -178,10 +178,10 @@ impl std::iter::Sum for IFloat {
 type Position = (IFloat, IFloat);
 
 const PI: IFloat = IFloat {
-    value: (std::f64::consts::PI * MAX as f64) as i32,
+    value: (std::f64::consts::PI * MAX as f64) as IFloatType,
 };
 const ZERO: IFloat = IFloat {
-    value: (0.0 * MAX as f64) as i32,
+    value: (0.0 * MAX as f64) as IFloatType,
 };
 
 fn dist(a: &Position, b: &Position) -> IFloat {
@@ -476,6 +476,7 @@ impl Space {
             }
         };
         let neutral = otherself.permute::<ChaCha8Rng>(density, &mut get_rng());
+        // println!("neutral:  {neutral}");
         let gradients = self
             .holes
             .iter_mut()
@@ -485,6 +486,7 @@ impl Space {
                     |l: &dyn Fn(&mut ((IFloat, IFloat), (IFloat, IFloat))) -> &mut IFloat| {
                         *l(&mut otherself.holes[i]) = *l(hole) + epsilon;
                         let gradient = otherself.permute::<ChaCha8Rng>(density, &mut get_rng());
+                        // println!("gradient: {gradient}");
                         *l(&mut otherself.holes[i]) = *l(hole);
                         gradient
                     };
@@ -652,7 +654,7 @@ fn train_and_save(
             )
         } else {
             let (loss, seed, gradients) =
-                space.gradient_descent(epoch_size, true, learn_rate, IFloat::from(1e-8), None);
+                space.gradient_descent(epoch_size, true, learn_rate, IFloat::from(1e-6), None);
 
             loss_eval_window.push_back(loss.log10());
             if loss_eval_window.len() > loss_window_size {
@@ -736,7 +738,7 @@ fn train_and_save(
 fn main() -> std::io::Result<()> {
     for (mut space, name) in vec![
         // (Space::new_with_star_holes(4), "asterisk_2"),
-        (Space::new_with_random_segment_holes(3), "triple_4"),
+        (Space::new_with_random_holes(3), "triple_4"),
         // (Space::new_with_random_segment_holes(5), "quintouple"),
         // (Space::new_with_random_segment_holes(6), "sextouple"),
         // (Space::new_with_random_segment_holes(7), "septouble"),
