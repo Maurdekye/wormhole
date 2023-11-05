@@ -1,11 +1,11 @@
 use core::panic;
-use std::collections::VecDeque;
 use image::{ImageBuffer, Rgb, RgbImage};
 use imageproc::drawing::{draw_filled_circle_mut, draw_line_segment_mut};
 use imageproc::map::map_pixels;
 use rand::prelude::*;
 use rand_chacha::ChaCha8Rng;
 use rayon::prelude::*;
+use std::collections::VecDeque;
 use std::f32::consts::{self, PI};
 use std::fs::{File, OpenOptions};
 use std::io::prelude::*;
@@ -295,32 +295,31 @@ impl Space {
                 let end_y_gradient = otherself.permute::<ChaCha8Rng>(density, &mut get_rng());
                 otherself.holes[i].1 .1 = hole.1 .1;
 
-                let start_gradient = (
-                    if neutral == start_x_gradient {
+                let g = |gradient| {
+                    if neutral == gradient {
                         0.0
                     } else {
-                        (neutral - start_x_gradient) / epsilon
-                    },
-                    if neutral == start_y_gradient {
-                        0.0
-                    } else {
-                        (neutral - start_y_gradient) / epsilon
-                    },
-                );
-                let end_gradient = (
-                    if neutral == end_x_gradient {
-                        0.0
-                    } else {
-                        (neutral - end_x_gradient) / epsilon
-                    },
-                    if neutral == end_y_gradient {
-                        0.0
-                    } else {
-                        (neutral - end_y_gradient) / epsilon
-                    },
-                );
+                        (neutral - gradient) / epsilon
+                    }
+                };
 
-                (start_gradient, end_gradient)
+                let f = |gradient_x, gradient_y| {
+                    let (gradient_x, gradient_y) = (g(gradient_x), g(gradient_y));
+                    let magnitude = gradient_x.hypot(gradient_y);
+                    if magnitude > temperature {
+                        (
+                            temperature * gradient_x / magnitude,
+                            temperature * gradient_y / magnitude,
+                        )
+                    } else {
+                        (gradient_x, gradient_y)
+                    }
+                };
+
+                (
+                    f(start_x_gradient, start_y_gradient),
+                    f(end_x_gradient, end_y_gradient),
+                )
             })
             .collect::<Vec<_>>();
         (
@@ -444,7 +443,7 @@ fn train_and_save(
         if max_iters.map(|iters| i > iters).unwrap_or(false) {
             break;
         }
-        
+
         let (loss, seed, gradients) = if i == 0 {
             // default values to record the 0th iteration
             let seed = rand::random::<u64>();
@@ -459,7 +458,7 @@ fn train_and_save(
         } else {
             let (loss, seed, gradients) =
                 space.gradient_descent(epoch_size, true, learn_rate, 1e-8, None);
-            
+
             loss_eval_window.push_back(loss.log10());
             if loss_eval_window.len() > loss_window_size {
                 loss_eval_window.pop_front();
@@ -504,8 +503,7 @@ fn train_and_save(
             gradients
         )?;
 
-        if loss_eval_window.len() >= loss_window_size && loss_window_slope.abs() < 1e-7
-        {
+        if loss_eval_window.len() >= loss_window_size && loss_window_slope.abs() < 1e-7 {
             println!("Gradients settled, ending simulation");
             break;
         }
@@ -535,7 +533,12 @@ fn train_and_save(
 
 fn main() -> std::io::Result<()> {
     for (mut space, name) in vec![
-        (Space::new_with_random_holes(3), "triple"),
+        (Space::new_with_star_holes(4), "asterisk_2"),
+        (Space::new_with_random_segment_holes(3), "triple_2"),
+        (Space::new_with_random_segment_holes(5), "quintouple"),
+        (Space::new_with_random_segment_holes(6), "sextouple"),
+        (Space::new_with_random_segment_holes(7), "septouble"),
+        (Space::new_with_random_segment_holes(8), "octouple"),
     ] {
         train_and_save(
             &mut space,
@@ -543,7 +546,7 @@ fn main() -> std::io::Result<()> {
             None,
             0.1,
             64,
-            120,
+            200,
             Some(FfmpegOptions { framerate: 60 }),
         )?;
     }
