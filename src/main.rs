@@ -279,21 +279,13 @@ impl Space {
             .iter_mut()
             .enumerate()
             .map(|(i, hole)| {
-                otherself.holes[i].0 .0 = hole.0 .0 + epsilon;
-                let start_x_gradient = otherself.permute::<ChaCha8Rng>(density, &mut get_rng());
-                otherself.holes[i].0 .0 = hole.0 .0;
-
-                otherself.holes[i].0 .1 = hole.0 .1 + epsilon;
-                let start_y_gradient = otherself.permute::<ChaCha8Rng>(density, &mut get_rng());
-                otherself.holes[i].0 .1 = hole.0 .1;
-
-                otherself.holes[i].1 .0 = hole.1 .0 + epsilon;
-                let end_x_gradient = otherself.permute::<ChaCha8Rng>(density, &mut get_rng());
-                otherself.holes[i].1 .0 = hole.1 .0;
-
-                otherself.holes[i].1 .1 = hole.1 .1 + epsilon;
-                let end_y_gradient = otherself.permute::<ChaCha8Rng>(density, &mut get_rng());
-                otherself.holes[i].1 .1 = hole.1 .1;
+                
+                let mut h = |l: &dyn Fn(&mut ((f64, f64), (f64, f64))) -> &mut f64| {
+                    *l(&mut otherself.holes[i]) = *l(hole) + epsilon;
+                    let gradient = otherself.permute::<ChaCha8Rng>(density, &mut get_rng());
+                    *l(&mut otherself.holes[i]) = *l(hole);
+                    gradient
+                };
 
                 let g = |gradient| {
                     if neutral == gradient {
@@ -317,8 +309,8 @@ impl Space {
                 };
 
                 (
-                    f(start_x_gradient, start_y_gradient),
-                    f(end_x_gradient, end_y_gradient),
+                    f(h(&|x| &mut x.0.0), h(&|x| &mut x.0.1)),
+                    f(h(&|x| &mut x.1.0), h(&|x| &mut x.1.1)),
                 )
             })
             .collect::<Vec<_>>();
@@ -533,12 +525,12 @@ fn train_and_save(
 
 fn main() -> std::io::Result<()> {
     for (mut space, name) in vec![
-        (Space::new_with_star_holes(4), "asterisk_2"),
-        (Space::new_with_random_segment_holes(3), "triple_2"),
-        (Space::new_with_random_segment_holes(5), "quintouple"),
-        (Space::new_with_random_segment_holes(6), "sextouple"),
-        (Space::new_with_random_segment_holes(7), "septouble"),
-        (Space::new_with_random_segment_holes(8), "octouple"),
+        // (Space::new_with_star_holes(4), "asterisk_2"),
+        (Space::new_with_random_segment_holes(3), "triple_3"),
+        // (Space::new_with_random_segment_holes(5), "quintouple"),
+        // (Space::new_with_random_segment_holes(6), "sextouple"),
+        // (Space::new_with_random_segment_holes(7), "septouble"),
+        // (Space::new_with_random_segment_holes(8), "octouple"),
     ] {
         train_and_save(
             &mut space,
