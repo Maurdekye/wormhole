@@ -1,8 +1,11 @@
 use core::panic;
+use std::cell::RefCell;
 use std::collections::VecDeque;
+use std::rc::Rc;
 use image::{ImageBuffer, Rgb, RgbImage};
 use imageproc::drawing::{draw_filled_circle_mut, draw_line_segment_mut};
 use imageproc::map::map_pixels;
+use rand::distributions::uniform::SampleBorrow;
 use rand::prelude::*;
 use rand_chacha::ChaCha8Rng;
 use rayon::prelude::*;
@@ -62,18 +65,159 @@ impl Iterator for GridIter {
     }
 }
 
+trait Train: Clone {
+    fn loss(&self, seed: Option<u64>) -> f64;
+    fn get_params(&mut self) -> Vec<RefCell<f64>>;
+    
+    fn render(&self) -> Option<RgbImage> { None }
+
+    fn gradient_descent(
+        &mut self,
+        temperature: f64,
+        epsilon: f64,
+        seed: Option<u64>,
+    ) -> (f64, u64, Vec<f64>) {
+        let mut otherself = self.clone();
+        let seed = seed.unwrap_or_else(|| rand::random::<u64>());
+        let base_loss = otherself.loss(Some(seed));
+        let gradients = self.get_params().iter().enumerate().map(|(i, parameter)| {
+            *otherself.get_params()[i].borrow_mut() = *parameter.borrow() + epsilon;
+            let gradient_loss = otherself.loss(Some(seed));
+            *otherself.get_params()[i].borrow_mut() = *parameter.borrow();
+            if base_loss == gradient_loss {
+                0.0
+            } else {
+                (base_loss - gradient_loss) / epsilon
+            }
+        }).collect::<Vec<_>>();
+        self.get_params().iter_mut().enumerate().for_each(|(i, parameter)| {
+            *parameter.borrow_mut() += gradients[i] * temperature;
+        });
+        (base_loss, seed, gradients)
+    }
+
+    fn train_and_save(
+        &mut self,
+        name: String,
+        iters: usize,
+        learn_rate: f64,
+        loss_window_size: usize,
+        save_video: Option<FfmpegOptions>,
+    ) -> std::io::Result<()> {
+        println!("Beginning training of {}", name);
+        fs::create_dir_all(format!("output/{}/", name))?;
+        let mut logfile = File::create(format!("output/{}.log", name))?;
+        let mut timestamp = SystemTime::now();
+        let mut loss_eval_window = VecDeque::with_capacity(loss_window_size);
+        let mut has_render = true;
+        for i in 0..iters {
+            let (loss, seed, gradients) = if i == 0 {
+                // default values to record the 0th iteration
+                let seed = rand::random::<u64>();
+                (
+                    self.loss(None),
+                    seed,
+                    self.get_params().iter().map(|_| 0.0).collect::<Vec<_>>()
+                )
+            } else {
+                let (loss, seed, gradients) = self.gradient_descent(learn_rate, 1e-10, None);
+                
+                loss_eval_window.push_back(loss.log10());
+                if loss_eval_window.len() > loss_window_size {
+                    loss_eval_window.pop_front();
+                }
+
+                let new_time = SystemTime::now();
+                let delta = new_time.duration_since(timestamp).unwrap();
+                timestamp = new_time;
+
+                let gradient_magnitudes = gradients.iter().map(|g| g.log10()).collect::<Vec<_>>();
+                
+                println!(
+                    "Iteration {}: took: {:.4}s, loss: {:.10}, gradients: {}",
+                    i,
+                    delta.as_secs_f64(),
+                    loss,
+                    gradient_magnitudes
+                        .iter()
+                        .map(|f| format!("{:.2}", f))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+
+                (loss, seed, gradients)
+            };
+
+            let loss_window_slope = slope(&loss_eval_window);
+
+            writeln!(
+                logfile,
+                "{},{},{},{},{},{:?},{:?}",
+                i,
+                seed,
+                timestamp.duration_since(UNIX_EPOCH).unwrap().as_millis(),
+                loss,
+                loss_window_slope,
+                self.get_params(),
+                gradients
+            )?;
+
+            if loss_eval_window.len() >= loss_window_size && loss_window_slope < 0.01
+            {
+                println!("Gradients settled, ending training");
+                break;
+            }
+
+            match self.render() {
+                Some(img) => img.save(format!("output/{}/iter-{}.png", name, i)).unwrap(),
+                None => {
+                    has_render = false;
+                }
+            };
+        }
+
+        match (has_render, save_video)  {
+            (true, Some(ffmpeg_options)) => {
+                Command::new("ffmpeg")
+                    .args([
+                        "-r",
+                        format!("{}", ffmpeg_options.framerate).as_str(),
+                        "-i",
+                        format!("output/{}/iter-%d.png", name).as_str(),
+                        "-pix_fmt",
+                        "yuv420p",
+                        format!("output/{}.mp4", name).as_str(),
+                    ])
+                    .spawn()?;
+            }
+            _ => (),
+        };
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug)]
 struct Space {
+    density: usize,
     bounds: (Position, Position),
-    holes: Vec<(Position, Position)>,
+    holes: Vec<((Rc<RefCell<f64>>, Rc<RefCell<f64>>), (Rc<RefCell<f64>>, Rc<RefCell<f64>>))>,
     hole_multiplier: f64,
+}
+
+fn dist_rc(a: &(Rc<RefCell<f64>>, Rc<RefCell<f64>>), b: &(Rc<RefCell<f64>>, Rc<RefCell<f64>>)) -> f64 {
+    dist(&(*a.0.borrow().borrow(), *a.1.borrow().borrow()), &(*b.0.borrow().borrow(), *b.1.borrow().borrow()))
+}
+
+fn dist_rc_partial(a: &(Rc<RefCell<f64>>, Rc<RefCell<f64>>), b: &(f64, f64)) -> f64 {
+    dist(&(*a.0.borrow().borrow(), *a.1.borrow().borrow()), b)
 }
 
 impl Space {
     fn new_with_holes(holes: Vec<(Position, Position)>) -> Space {
         Space {
+            density: 64,
             bounds: ((0.0, 0.0), (1.0, 1.0)),
-            holes: holes,
+            holes: holes.into_iter().map(|(((x1, y1), (x2, y2)))| ((Rc::new(RefCell::new(x1)), Rc::new(RefCell::new(y1))), (Rc::new(RefCell::new(x2)), Rc::new(RefCell::new(y2))))).collect(),
             hole_multiplier: 0.0,
         }
     }
@@ -148,26 +292,26 @@ impl Space {
         )
     }
 
-    fn test(&self, start: &Position, end: &Position) -> f64 {
-        let mut travel_dist = dist(start, end);
-        for (hole_a, hole_b) in self.holes.iter() {
-            let a_dist = dist(start, hole_a);
-            let b_dist = dist(start, hole_b);
-            let hole_dist = if a_dist < b_dist {
-                a_dist + dist(hole_b, end)
-            } else {
-                b_dist + dist(hole_a, end)
-            } + if self.hole_multiplier > f64::default() {
-                dist(hole_a, hole_b)
-            } else {
-                f64::default()
-            };
-            if hole_dist < travel_dist {
-                travel_dist = hole_dist;
-            }
-        }
-        travel_dist
-    }
+    // fn test(&self, start: &Position, end: &Position) -> f64 {
+    //     let mut travel_dist = dist(start, end);
+    //     for (hole_a, hole_b) in self.holes.iter() {
+    //         let a_dist = dist(start, hole_a.borro);
+    //         let b_dist = dist(start, hole_b);
+    //         let hole_dist = if a_dist < b_dist {
+    //             a_dist + dist(hole_b, end)
+    //         } else {
+    //             b_dist + dist(hole_a, end)
+    //         } + if self.hole_multiplier > f64::default() {
+    //             dist(hole_a, hole_b)
+    //         } else {
+    //             f64::default()
+    //         };
+    //         if hole_dist < travel_dist {
+    //             travel_dist = hole_dist;
+    //         }
+    //     }
+    //     travel_dist
+    // }
 
     fn test_with_multi_travel(&self, start: &Position, end: &Position) -> f64 {
         let mut traveled = 0.0;
@@ -179,19 +323,19 @@ impl Space {
                 .iter()
                 .map(|hole| {
                     let hole_travel = if self.hole_multiplier > 0.0 {
-                        dist(&hole.0, &hole.1) * self.hole_multiplier
+                        dist_rc(&hole.0, &hole.1) * self.hole_multiplier
                     } else {
                         0.0
                     };
                     [
                         (
-                            dist(&hole.0, &current_pos) + hole_travel,
-                            dist(&hole.1, &end),
+                            dist_rc_partial(&hole.0, &current_pos) + hole_travel,
+                            dist_rc_partial(&hole.1, &end),
                             &hole.1,
                         ),
                         (
-                            dist(&hole.1, &current_pos) + hole_travel,
-                            dist(&hole.0, &end),
+                            dist_rc_partial(&hole.1, &current_pos) + hole_travel,
+                            dist_rc_partial(&hole.0, &end),
                             &hole.0,
                         ),
                     ]
@@ -208,7 +352,7 @@ impl Space {
                     break;
                 }
                 Some((travel, new_direct, new_pos)) => {
-                    current_pos = new_pos.clone();
+                    current_pos = (new_pos.0.borrow().borrow().clone(), new_pos.1.borrow().borrow().clone());
                     traveled += travel;
                     direct = new_direct;
                 }
@@ -255,92 +399,10 @@ impl Space {
             .sum();
         total / grid_density.pow(4) as f64
     }
+}
 
-    fn gradient_descent(
-        &mut self,
-        density: usize,
-        random_placement: bool,
-        temperature: f64,
-        epsilon: f64,
-        seed: Option<u64>,
-    ) -> (f64, u64, Vec<(Position, Position)>) {
-        let mut otherself = self.clone();
-        let seed = seed.unwrap_or_else(|| rand::random::<u64>());
-        let get_rng = || {
-            if random_placement {
-                Some::<ChaCha8Rng>(SeedableRng::seed_from_u64(seed))
-            } else {
-                None
-            }
-        };
-        let neutral = otherself.permute::<ChaCha8Rng>(density, &mut get_rng());
-        let gradients = self
-            .holes
-            .iter_mut()
-            .enumerate()
-            .map(|(i, hole)| {
-                otherself.holes[i].0 .0 = hole.0 .0 + epsilon;
-                let start_x_gradient = otherself.permute::<ChaCha8Rng>(density, &mut get_rng());
-                otherself.holes[i].0 .0 = hole.0 .0;
-
-                otherself.holes[i].0 .1 = hole.0 .1 + epsilon;
-                let start_y_gradient = otherself.permute::<ChaCha8Rng>(density, &mut get_rng());
-                otherself.holes[i].0 .1 = hole.0 .1;
-
-                otherself.holes[i].1 .0 = hole.1 .0 + epsilon;
-                let end_x_gradient = otherself.permute::<ChaCha8Rng>(density, &mut get_rng());
-                otherself.holes[i].1 .0 = hole.1 .0;
-
-                otherself.holes[i].1 .1 = hole.1 .1 + epsilon;
-                let end_y_gradient = otherself.permute::<ChaCha8Rng>(density, &mut get_rng());
-                otherself.holes[i].1 .1 = hole.1 .1;
-
-                let start_gradient = (
-                    if neutral == start_x_gradient {
-                        0.0
-                    } else {
-                        (neutral - start_x_gradient) / epsilon
-                    },
-                    if neutral == start_y_gradient {
-                        0.0
-                    } else {
-                        (neutral - start_y_gradient) / epsilon
-                    },
-                );
-                let end_gradient = (
-                    if neutral == end_x_gradient {
-                        0.0
-                    } else {
-                        (neutral - end_x_gradient) / epsilon
-                    },
-                    if neutral == end_y_gradient {
-                        0.0
-                    } else {
-                        (neutral - end_y_gradient) / epsilon
-                    },
-                );
-
-                (start_gradient, end_gradient)
-            })
-            .collect::<Vec<_>>();
-        (
-            neutral,
-            seed,
-            gradients
-                .into_iter()
-                .zip(self.holes.iter_mut())
-                .map(|((start, end), hole)| {
-                    hole.0 .0 += start.0 * temperature;
-                    hole.0 .1 += start.1 * temperature;
-                    hole.1 .0 += end.0 * temperature;
-                    hole.1 .1 += end.1 * temperature;
-                    (start, end)
-                })
-                .collect(),
-        )
-    }
-
-    fn render(&self) -> RgbImage {
+impl Train for Space {
+    fn render(&self) -> Option<RgbImage> {
         let dims = (1024, 1024);
         let center = ((dims.0 / 2) as f32, (dims.1 / 2) as f32);
         let max_distance = f32::hypot(center.0, center.1);
@@ -397,7 +459,15 @@ impl Space {
             );
             draw_line_segment_mut(&mut img, start_pixel, end_pixel, Rgb([128, 128, 128]));
         }
-        img
+        Some(img)
+    }
+
+    fn loss(&self, seed: Option<u64>) -> f64 {
+        self.permute::<ChaCha8Rng>(self.density, &mut Some(SeedableRng::seed_from_u64(seed.unwrap_or_else(|| rand::random()))))
+    }
+
+    fn get_params(&mut self) -> Vec<RefCell<f64>> {
+        self.holes.iter_mut().map(|((x1, y1), (x2, y2)): ((&mut f64, &mut f64), (&mut f64, &mut f64))| [x1, y1, x2, y2]).flatten().collect()
     }
 }
 
