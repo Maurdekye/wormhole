@@ -1,4 +1,5 @@
 use core::panic;
+use std::collections::VecDeque;
 use image::{ImageBuffer, Rgb, RgbImage};
 use imageproc::drawing::{draw_filled_circle_mut, draw_line_segment_mut};
 use imageproc::map::map_pixels;
@@ -404,7 +405,7 @@ struct FfmpegOptions {
     framerate: usize,
 }
 
-fn slope(values: Vec<f64>) -> f64 {
+fn slope(values: &VecDeque<f64>) -> f64 {
     let n = values.len() as f64;
     let (x, y, xy, x2) = values
         .iter()
@@ -428,12 +429,14 @@ fn train_and_save(
     iters: usize,
     learn_rate: f64,
     epoch_size: usize,
+    loss_window_size: usize,
     save_video: Option<FfmpegOptions>,
 ) -> std::io::Result<()> {
     println!("Beginning training of {}", name);
     fs::create_dir_all(format!("output/{}/", name))?;
     let mut logfile = File::create(format!("output/{}.log", name))?;
     let mut timestamp = SystemTime::now();
+    let mut loss_eval_window = VecDeque::with_capacity(loss_window_size);
     for i in 0..iters {
         let (loss, seed, gradients, gradient_magnitudes) = if i == 0 {
             // default values to record the 0th iteration
@@ -450,6 +453,10 @@ fn train_and_save(
         } else {
             let (loss, seed, gradients) =
                 space.gradient_descent(epoch_size, true, learn_rate, 1e-10, None);
+            loss_eval_window.push_back(loss.log10());
+            if loss_eval_window.len() > loss_window_size {
+                loss_eval_window.pop_front();
+            }
             let gradient_magnitudes = gradients
                 .iter()
                 .map(|(a, b)| [dist(a, &(0.0, 0.0)).log10(), dist(b, &(0.0, 0.0)).log10()])
@@ -471,21 +478,19 @@ fn train_and_save(
             );
             (loss, seed, gradients, gradient_magnitudes)
         };
+        let loss_window_slope = slope(&loss_eval_window);
         writeln!(
             logfile,
-            "{},{},{},{},{:?},{:?}",
+            "{},{},{},{},{},{:?},{:?}",
             i,
             seed,
             timestamp.duration_since(UNIX_EPOCH).unwrap().as_millis(),
             loss,
+            loss_window_slope,
             space.holes,
             gradients
         )?;
-        if gradient_magnitudes
-            .iter()
-            .max_by(|a, b| a.partial_cmp(b).unwrap())
-            .unwrap()
-            < &-4.0
+        if loss_eval_window.len() >= loss_window_size && loss_window_slope < 0.01
         {
             println!("Gradients settled, ending simulation");
             break;
@@ -522,6 +527,7 @@ fn main() -> std::io::Result<()> {
             650,
             0.1,
             64,
+            100,
             Some(FfmpegOptions { framerate: 60 }),
         )?;
     }
