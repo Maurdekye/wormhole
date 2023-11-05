@@ -1,6 +1,4 @@
 use core::panic;
-use std::fs::{OpenOptions, File};
-use std::time::{SystemTime, UNIX_EPOCH};
 use image::{ImageBuffer, Rgb, RgbImage};
 use imageproc::drawing::{draw_filled_circle_mut, draw_line_segment_mut};
 use imageproc::map::map_pixels;
@@ -8,8 +6,11 @@ use rand::prelude::*;
 use rand_chacha::ChaCha8Rng;
 use rayon::prelude::*;
 use std::f32::consts::{self, PI};
-use std::{fs, iter::*};
+use std::fs::{File, OpenOptions};
 use std::io::prelude::*;
+use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
+use std::{fs, iter::*};
 
 type Position = (f64, f64);
 
@@ -80,38 +81,70 @@ impl Space {
         Space::new_with_holes(Vec::new())
     }
 
-    fn new_with_random_holes(n: usize) -> Space {
-        Space::new_with_holes((0..n).map(|_| {
-            let length = 0.02;
-            let center: (f64, f64) = (rand::random(), rand::random());
-            let angle: f64 = rand::random::<f64>() * std::f64::consts::PI * 2.0;
-            let (s, c) = angle.sin_cos();
-            let radius = (length * s, length * c);
-            let start = (center.0 + radius.0, center.1 + radius.1);
-            let end = (center.0 - radius.0, center.1 - radius.1);
-            (start, end)
-        }).collect())
+    fn new_with_random_segment_holes(n: usize) -> Space {
+        Space::new_with_holes(
+            (0..n)
+                .map(|_| {
+                    let length = 0.02;
+                    let center: (f64, f64) = (rand::random(), rand::random());
+                    let angle: f64 = rand::random::<f64>() * std::f64::consts::PI * 2.0;
+                    let (s, c) = angle.sin_cos();
+                    let radius = (length * s, length * c);
+                    let start = (center.0 + radius.0, center.1 + radius.1);
+                    let end = (center.0 - radius.0, center.1 - radius.1);
+                    (start, end)
+                })
+                .collect(),
+        )
     }
 
     fn new_with_aligned_holes(n: usize) -> Space {
-        Space::new_with_holes((1..=n).map(|i| {
-            let x = i as f64 / (n + 1) as f64;
-            ((x, 0.35), (x, 0.65))
-        }).collect())
+        Space::new_with_holes(
+            (1..=n)
+                .map(|i| {
+                    let x = i as f64 / (n + 1) as f64;
+                    ((x, 0.35), (x, 0.65))
+                })
+                .collect(),
+        )
     }
 
-    fn new_with_polyhedra_holes(n: usize) -> Space {
-        Space::new_with_holes((1..=n).map(|i| {
-            let angle_start = (i as f64 / n as f64) * 2.0 * std::f64::consts::PI;
-            let (s_a, c_a) = angle_start.sin_cos();
-            let angle_end = ((i+1) as f64 / n as f64) * 2.0 * std::f64::consts::PI;
-            let (s_b, c_b) = angle_end.sin_cos();
-            ((0.5 + s_a / 4.0, 0.5 + c_a / 4.0), (0.5 + s_b / 4.0, 0.5 + c_b / 4.0))
-        }).collect())
+    fn new_with_polyhedra_holes(n: usize, gap: f64) -> Space {
+        Space::new_with_holes(
+            (1..=n)
+                .map(|i| {
+                    let angle_start =
+                        (i as f64 / n as f64) * 2.0 * std::f64::consts::PI + gap / 2.0;
+                    let (s_a, c_a) = angle_start.sin_cos();
+                    let angle_end =
+                        ((i + 1) as f64 / n as f64) * 2.0 * std::f64::consts::PI - gap / 2.0;
+                    let (s_b, c_b) = angle_end.sin_cos();
+                    (
+                        (0.5 + s_a / 4.0, 0.5 + c_a / 4.0),
+                        (0.5 + s_b / 4.0, 0.5 + c_b / 4.0),
+                    )
+                })
+                .collect(),
+        )
+    }
+
+    fn new_with_random_holes(n: usize) -> Space {
+        Space::new_with_holes((0..n).map(|_| (rand::random(), rand::random())).collect())
     }
 
     fn new_with_star_holes(n: usize) -> Space {
-        todo!()
+        Space::new_with_holes(
+            (0..n)
+                .map(|i| {
+                    let angle = (i as f64 / n as f64) * std::f64::consts::PI;
+                    let (s, c) = angle.sin_cos();
+                    (
+                        (0.5 + s / 2.0, 0.5 + c / 2.0),
+                        (0.5 - s / 2.0, 0.5 - c / 2.0),
+                    )
+                })
+                .collect(),
+        )
     }
 
     fn test(&self, start: &Position, end: &Position) -> f64 {
@@ -164,8 +197,10 @@ impl Space {
                 })
                 .flatten()
                 .filter(|(travel, new_dist, _)| travel + new_dist < direct)
-                .min_by(|(_, new_dist_a, _), (_, new_dist_b, _)| {
-                    new_dist_a.partial_cmp(new_dist_b).unwrap()
+                .min_by(|(travel_a, new_dist_a, _), (travel_b, new_dist_b, _)| {
+                    (travel_a + new_dist_a)
+                        .partial_cmp(&(travel_b + new_dist_b))
+                        .unwrap()
                 }) {
                 None => {
                     traveled += direct;
@@ -226,12 +261,13 @@ impl Space {
         random_placement: bool,
         temperature: f64,
         epsilon: f64,
-    ) -> (f64, Vec<(Position, Position)>) {
+        seed: Option<u64>,
+    ) -> (f64, u64, Vec<(Position, Position)>) {
         let mut otherself = self.clone();
-        let iteration_seed = rand::random::<u64>();
+        let seed = seed.unwrap_or_else(|| rand::random::<u64>());
         let get_rng = || {
             if random_placement {
-                Some::<ChaCha8Rng>(SeedableRng::seed_from_u64(iteration_seed))
+                Some::<ChaCha8Rng>(SeedableRng::seed_from_u64(seed))
             } else {
                 None
             }
@@ -259,12 +295,28 @@ impl Space {
                 otherself.holes[i].1 .1 = hole.1 .1;
 
                 let start_gradient = (
-                    if neutral == start_x_gradient { 0.0 } else { (neutral - start_x_gradient) / epsilon },
-                    if neutral == start_y_gradient { 0.0 } else { (neutral - start_y_gradient) / epsilon }
+                    if neutral == start_x_gradient {
+                        0.0
+                    } else {
+                        (neutral - start_x_gradient) / epsilon
+                    },
+                    if neutral == start_y_gradient {
+                        0.0
+                    } else {
+                        (neutral - start_y_gradient) / epsilon
+                    },
                 );
                 let end_gradient = (
-                    if neutral == end_x_gradient { 0.0 } else { (neutral - end_x_gradient) / epsilon },
-                    if neutral == end_y_gradient { 0.0 } else { (neutral - end_y_gradient) / epsilon }
+                    if neutral == end_x_gradient {
+                        0.0
+                    } else {
+                        (neutral - end_x_gradient) / epsilon
+                    },
+                    if neutral == end_y_gradient {
+                        0.0
+                    } else {
+                        (neutral - end_y_gradient) / epsilon
+                    },
                 );
 
                 (start_gradient, end_gradient)
@@ -272,6 +324,7 @@ impl Space {
             .collect::<Vec<_>>();
         (
             neutral,
+            seed,
             gradients
                 .into_iter()
                 .zip(self.holes.iter_mut())
@@ -347,33 +400,87 @@ impl Space {
     }
 }
 
-fn train_and_save(space: &mut Space, name: String, iters: usize, learn_rate: f64, epoch_size: usize) -> std::io::Result<()> {
+struct FfmpegOptions {
+    framerate: usize,
+}
+
+fn slope(values: Vec<f64>) -> f64 {
+    let n = values.len() as f64;
+    let (x, y, xy, x2) = values
+        .iter()
+        .enumerate()
+        .map(|(i, y)| (i as f64, y))
+        .fold((0.0, 0.0, 0.0, 0.0), |(sx, sy, sxy, sx2), (x, &y)| {
+            (sx + x, sy + y, sxy + x * y, sx2 + x.powi(2))
+        });
+    let num = n * xy - x * y;
+    let denom = n * x2 - x.powi(2);
+    if denom == 0.0 {
+        0.0
+    } else {
+        num / denom
+    }
+}
+
+fn train_and_save(
+    space: &mut Space,
+    name: String,
+    iters: usize,
+    learn_rate: f64,
+    epoch_size: usize,
+    save_video: Option<FfmpegOptions>,
+) -> std::io::Result<()> {
     println!("Beginning training of {}", name);
     fs::create_dir_all(format!("output/{}/", name))?;
     let mut logfile = File::create(format!("output/{}.log", name))?;
     let mut timestamp = SystemTime::now();
-    for i in 1..iters {
-        let (loss, gradients) = space.gradient_descent(epoch_size, true, learn_rate, 1e-10);
-        let gradient_magnitudes = gradients
-            .iter()
-            .map(|(a, b)| [dist(a, &(0.0, 0.0)).log10(), dist(b, &(0.0, 0.0)).log10()])
-            .flatten()
-            .collect::<Vec<_>>();
-        let new_time = SystemTime::now();
-        let delta = new_time.duration_since(timestamp).unwrap();
-        timestamp = new_time;
-        println!(
-            "Iteration {}: took: {:.4}s, loss: {:.10}, gradients: {}",
-            i,
-            delta.as_secs_f64(),
-            loss,
-            gradient_magnitudes
+    for i in 0..iters {
+        let (loss, seed, gradients, gradient_magnitudes) = if i == 0 {
+            // default values to record the 0th iteration
+            let seed = rand::random::<u64>();
+            (
+                space
+                    .permute::<ChaCha8Rng>(epoch_size, &mut Some(SeedableRng::seed_from_u64(seed))),
+                seed,
+                (0..space.holes.len())
+                    .map(|_| ((0.0, 0.0), (0.0, 0.0)))
+                    .collect(),
+                (0..(space.holes.len() * 2)).map(|_| 0.0).collect(),
+            )
+        } else {
+            let (loss, seed, gradients) =
+                space.gradient_descent(epoch_size, true, learn_rate, 1e-10, None);
+            let gradient_magnitudes = gradients
                 .iter()
-                .map(|f| format!("{:.2}", f))
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
-        writeln!(logfile, "{},{},{},{:?},{:?}", i, timestamp.duration_since(UNIX_EPOCH).unwrap().as_millis(), loss, space.holes, gradients)?;
+                .map(|(a, b)| [dist(a, &(0.0, 0.0)).log10(), dist(b, &(0.0, 0.0)).log10()])
+                .flatten()
+                .collect::<Vec<_>>();
+            let new_time = SystemTime::now();
+            let delta = new_time.duration_since(timestamp).unwrap();
+            timestamp = new_time;
+            println!(
+                "Iteration {}: took: {:.4}s, loss: {:.10}, gradients: {}",
+                i,
+                delta.as_secs_f64(),
+                loss,
+                gradient_magnitudes
+                    .iter()
+                    .map(|f| format!("{:.2}", f))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+            (loss, seed, gradients, gradient_magnitudes)
+        };
+        writeln!(
+            logfile,
+            "{},{},{},{},{:?},{:?}",
+            i,
+            seed,
+            timestamp.duration_since(UNIX_EPOCH).unwrap().as_millis(),
+            loss,
+            space.holes,
+            gradients
+        )?;
         if gradient_magnitudes
             .iter()
             .max_by(|a, b| a.partial_cmp(b).unwrap())
@@ -386,20 +493,83 @@ fn train_and_save(space: &mut Space, name: String, iters: usize, learn_rate: f64
         let img = space.render();
         img.save(format!("output/{}/iter-{}.png", name, i)).unwrap();
     }
+    match save_video {
+        Some(ffmpeg_options) => {
+            Command::new("ffmpeg")
+                .args([
+                    "-r",
+                    format!("{}", ffmpeg_options.framerate).as_str(),
+                    "-i",
+                    format!("output/{}/iter-%d.png", name).as_str(),
+                    "-pix_fmt",
+                    "yuv420p",
+                    format!("output/{}.mp4", name).as_str(),
+                ])
+                .spawn()?;
+        }
+        None => (),
+    };
     Ok(())
 }
 
 fn main() -> std::io::Result<()> {
     for (mut space, name) in vec![
-        (Space::new_with_holes(vec![
-            ((0.25, 0.5), (0.75, 0.5)),
-            ((0.5, 0.25), (0.5, 0.75)),
-            ((0.25, 0.25), (0.75, 0.75)),
-            ((0.25, 0.75), (0.75, 0.25))
-        ]), "asterisk"),
-        (Space::new_with_polyhedra_holes(5), "pentagon")
+        (Space::new_with_polyhedra_holes(5, 0.05), "pentagon"),
     ] {
-        train_and_save(&mut space, name.to_string(), 1000, 0.1, 64)?;
+        train_and_save(
+            &mut space,
+            name.to_string(),
+            650,
+            0.1,
+            64,
+            Some(FfmpegOptions { framerate: 60 }),
+        )?;
     }
     Ok(())
 }
+
+// fn main() -> std::io::Result<()> {
+//     let mut space = Space::new_with_holes(vec![
+//         (
+//             (0.16889731292044485, 0.5161361052942766),
+//             (0.6610321174779364, 0.7671500424093027),
+//         ),
+//         (
+//             (0.7768302778951881, 0.8067467196950361),
+//             (0.622503395204943, 0.1963612047357916),
+//         ),
+//         (
+//             (0.8069115253149532, 0.2943328530101961),
+//             (0.19300026746574028, 0.2947843252031599),
+//         ),
+//         (
+//             (0.3766822006953432, 0.19642903936259615),
+//             (0.22403880468848836, 0.8068820558817378),
+//         ),
+//         (
+//             (0.3398511759604552, 0.7674035063258247),
+//             (0.8310693248776652, 0.5147821883157463),
+//         ),
+//     ]);
+
+//     let pos = (
+//         &(0.45979526972906337, 0.12906427913162202),
+//         &(0.4904186156070029, 0.7839874984631059),
+//     );
+//     let a = space.test_with_multi_travel(pos.0, pos.1);
+//     space.holes[0].0 .1 += 1e-10;
+//     let b = space.test_with_multi_travel(pos.0, pos.1);
+//     println!("{a}, {b}");
+
+//     // let neutral = space.permute::<ChaCha8Rng>(64, &mut Some::<ChaCha8Rng>(SeedableRng::seed_from_u64(2588624089716686143)));
+//     // println!("{neutral}");
+//     // space.holes[0].0.1 += 1e-10;
+//     // let exception = space.permute::<ChaCha8Rng>(64, &mut Some::<ChaCha8Rng>(SeedableRng::seed_from_u64(2588624089716686143)));
+//     // println!("{exception}");
+
+//     // let results = space.gradient_descent(64, true, 0.1, 1e-10, Some(2588624089716686143));
+//     // println!("{:?}", space);
+//     // println!("{:?}", results);
+
+//     Ok(())
+// }
