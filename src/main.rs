@@ -1,24 +1,25 @@
-use core::panic;
-use std::fmt::Display;
-use std::ops::{Add, Sub, Mul, Div, AddAssign};
-use image::{ImageBuffer, Rgb, RgbImage};
+use image::{Rgb, RgbImage};
 use imageproc::drawing::{draw_filled_circle_mut, draw_line_segment_mut};
 use imageproc::map::map_pixels;
 use rand::prelude::*;
 use rand_chacha::ChaCha8Rng;
 use rayon::prelude::*;
 use std::collections::VecDeque;
-use std::fs::{File, OpenOptions};
+use std::fmt::Display;
+use std::fs::File;
 use std::io::prelude::*;
+use std::ops::{Add, AddAssign, Div, Mul, Sub};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{fs, iter::*};
 
-const MAX: i32 = i32::MAX >> 3;
+type IFloatType = i32;
+const SCALE_FACTOR: u32 = 8;
+const MAX: IFloatType = IFloatType::MAX >> ((IFloatType::BITS - 1) - SCALE_FACTOR);
 
 #[derive(Clone, Copy, Debug)]
 struct IFloat {
-    value: i32
+    value: IFloatType,
 }
 
 impl IFloat {
@@ -32,16 +33,26 @@ impl IFloat {
         (IFloat::from(s), IFloat::from(c))
     }
 
-    fn random() -> Self {
-        IFloat { value: rand::random::<i32>() % MAX }
+    fn random_with_rng<T: Rng>(rng: &mut T) -> Self {
+        IFloat {
+            value: rng.gen::<IFloatType>() % MAX,
+        }
     }
-    
+
+    fn random() -> Self {
+        IFloat {
+            value: rand::random::<IFloatType>() % MAX,
+        }
+    }
+
     fn map<T>(self, f: &dyn Fn(f64) -> T) -> T {
         f(self.into())
     }
 
     fn pow(self, exp: usize) -> Self {
-        IFloat { value: self.value.pow(exp as u32) }
+        IFloat {
+            value: self.value.pow(exp as u32),
+        }
     }
 
     fn log10(self) -> Self {
@@ -50,28 +61,35 @@ impl IFloat {
     }
 
     fn abs(self) -> Self {
-        IFloat { value: self.value.abs() }
+        IFloat {
+            value: self.value.abs(),
+        }
     }
 }
 
 impl From<f64> for IFloat {
     fn from(x: f64) -> IFloat {
-        IFloat { value: (x * MAX as f64) as i32 }
+        IFloat {
+            value: (x * MAX as f64) as IFloatType,
+        }
     }
 }
 
 impl From<usize> for IFloat {
     fn from(x: usize) -> IFloat {
-        IFloat { value: ((x as f64) * MAX as f64) as i32 }
+        IFloat {
+            value: ((x as f64) * MAX as f64) as IFloatType,
+        }
     }
 }
 
 impl From<u32> for IFloat {
     fn from(x: u32) -> IFloat {
-        IFloat { value: ((x as f64) * MAX as f64) as i32 }
+        IFloat {
+            value: ((x as f64) * MAX as f64) as IFloatType,
+        }
     }
 }
-
 
 impl Into<f64> for IFloat {
     fn into(self) -> f64 {
@@ -97,7 +115,9 @@ impl Add for IFloat {
     type Output = IFloat;
 
     fn add(self, rhs: Self) -> Self::Output {
-        IFloat { value: self.value + rhs.value }
+        IFloat {
+            value: self.value + rhs.value,
+        }
     }
 }
 
@@ -111,7 +131,9 @@ impl Sub for IFloat {
     type Output = IFloat;
 
     fn sub(self, rhs: Self) -> Self::Output {
-        IFloat { value: self.value - rhs.value }
+        IFloat {
+            value: self.value - rhs.value,
+        }
     }
 }
 
@@ -119,7 +141,9 @@ impl Mul for IFloat {
     type Output = IFloat;
 
     fn mul(self, rhs: Self) -> Self::Output {
-        IFloat { value: self.value * rhs.value }
+        IFloat {
+            value: (((self.value as i64) * (rhs.value as i64)) >> SCALE_FACTOR) as IFloatType,
+        }
     }
 }
 
@@ -127,7 +151,9 @@ impl Div for IFloat {
     type Output = IFloat;
 
     fn div(self, rhs: Self) -> Self::Output {
-        IFloat { value: self.value / rhs.value }
+        IFloat {
+            value: (((self.value as i64) << SCALE_FACTOR) / rhs.value as i64) as IFloatType,
+        }
     }
 }
 
@@ -151,8 +177,12 @@ impl std::iter::Sum for IFloat {
 
 type Position = (IFloat, IFloat);
 
-const PI: IFloat = IFloat { value: (std::f64::consts::PI * MAX as f64) as i32 };
-const ZERO: IFloat = IFloat { value: (0.0 * MAX as f64) as i32 };
+const PI: IFloat = IFloat {
+    value: (std::f64::consts::PI * MAX as f64) as i32,
+};
+const ZERO: IFloat = IFloat {
+    value: (0.0 * MAX as f64) as i32,
+};
 
 fn dist(a: &Position, b: &Position) -> IFloat {
     let dx = a.0 - b.0;
@@ -212,7 +242,10 @@ struct Space {
 impl Space {
     fn new_with_holes(holes: Vec<(Position, Position)>) -> Space {
         Space {
-            bounds: ((IFloat::from(ZERO.clone()), IFloat::from(ZERO.clone())), (IFloat::from(1.0), IFloat::from(1.0))),
+            bounds: (
+                (IFloat::from(ZERO.clone()), IFloat::from(ZERO.clone())),
+                (IFloat::from(1.0), IFloat::from(1.0)),
+            ),
             holes: holes,
             hole_multiplier: ZERO.clone(),
         }
@@ -226,7 +259,7 @@ impl Space {
         Space::new_with_holes(
             (0..n)
                 .map(|_| {
-                    let length = ZERO.clone();
+                    let length = IFloat::from(0.02);
                     let center: (IFloat, IFloat) = (IFloat::random(), IFloat::random());
                     let angle: IFloat = IFloat::random() * PI * IFloat::from(2.0);
                     let (s, c) = angle.sin_cos();
@@ -254,15 +287,22 @@ impl Space {
         Space::new_with_holes(
             (1..=n)
                 .map(|i| {
-                    let angle_start =
-                        (IFloat::from(i) / IFloat::from(n)) * IFloat::from(2.0) * PI + gap / IFloat::from(2.0);
+                    let angle_start = (IFloat::from(i) / IFloat::from(n)) * IFloat::from(2.0) * PI
+                        + gap / IFloat::from(2.0);
                     let (s_a, c_a) = angle_start.sin_cos();
                     let angle_end =
-                        (IFloat::from(i + 1) / IFloat::from(n)) * IFloat::from(2.0) * PI - gap / IFloat::from(2.0);
+                        (IFloat::from(i + 1) / IFloat::from(n)) * IFloat::from(2.0) * PI
+                            - gap / IFloat::from(2.0);
                     let (s_b, c_b) = angle_end.sin_cos();
                     (
-                        (IFloat::from(0.5) + s_a / IFloat::from(4.0), IFloat::from(0.5) + c_a / IFloat::from(4.0)),
-                        (IFloat::from(0.5) + s_b / IFloat::from(4.0), IFloat::from(0.5) + c_b / IFloat::from(4.0)),
+                        (
+                            IFloat::from(0.5) + s_a / IFloat::from(4.0),
+                            IFloat::from(0.5) + c_a / IFloat::from(4.0),
+                        ),
+                        (
+                            IFloat::from(0.5) + s_b / IFloat::from(4.0),
+                            IFloat::from(0.5) + c_b / IFloat::from(4.0),
+                        ),
                     )
                 })
                 .collect(),
@@ -270,7 +310,16 @@ impl Space {
     }
 
     fn new_with_random_holes(n: usize) -> Space {
-        Space::new_with_holes((0..n).map(|_| ((IFloat::random(), IFloat::random()), (IFloat::random(), IFloat::random()))).collect())
+        Space::new_with_holes(
+            (0..n)
+                .map(|_| {
+                    (
+                        (IFloat::random(), IFloat::random()),
+                        (IFloat::random(), IFloat::random()),
+                    )
+                })
+                .collect(),
+        )
     }
 
     fn new_with_star_holes(n: usize) -> Space {
@@ -280,8 +329,14 @@ impl Space {
                     let angle = (IFloat::from(i) / IFloat::from(n)) * PI;
                     let (s, c) = angle.sin_cos();
                     (
-                        (IFloat::from(0.5) + s / IFloat::from(2.0), IFloat::from(0.5) + c /  IFloat::from(2.0)),
-                        (IFloat::from(0.5) - s /  IFloat::from(2.0), IFloat::from(0.5) - c /  IFloat::from(2.0)),
+                        (
+                            IFloat::from(0.5) + s / IFloat::from(2.0),
+                            IFloat::from(0.5) + c / IFloat::from(2.0),
+                        ),
+                        (
+                            IFloat::from(0.5) - s / IFloat::from(2.0),
+                            IFloat::from(0.5) - c / IFloat::from(2.0),
+                        ),
                     )
                 })
                 .collect(),
@@ -361,27 +416,29 @@ impl Space {
     where
         T: Rng,
     {
-
         let float_density = IFloat::from(grid_density);
         let cell_width = (self.bounds.1 .0 - self.bounds.0 .0) / float_density;
         let cell_height = (self.bounds.1 .1 - self.bounds.0 .1) / float_density;
         let offsets = GridIter::between(&(0, 0), &(grid_density, grid_density))
             .map(|_| match random_placement {
-                None => (cell_width / IFloat::from(2.0), cell_height / IFloat::from(2.0)),
+                None => (
+                    cell_width / IFloat::from(2.0),
+                    cell_height / IFloat::from(2.0),
+                ),
                 Some(rng) => (
-                    IFloat::random() * cell_width,
-                    IFloat::random() * cell_height,
+                    IFloat::random_with_rng(rng) * cell_width,
+                    IFloat::random_with_rng(rng) * cell_height,
                 ),
             })
             .collect::<Vec<Position>>();
-        let total: IFloat = GridIter::between(&(0, 0), &(grid_density, grid_density))
+        let mut total: IFloat = GridIter::between(&(0, 0), &(grid_density, grid_density))
             .collect::<Vec<_>>()
             .par_iter()
             .enumerate()
             .map(|(si, (start_x, start_y))| {
                 let start = (
-                    self.bounds.0 .0 + cell_width * IFloat::from(*start_x) + offsets[si].0,
-                    self.bounds.0 .1 + cell_height * IFloat::from(*start_y) + offsets[si].1,
+                    self.bounds.0.0 + cell_width * IFloat::from(*start_x) + offsets[si].0,
+                    self.bounds.0.1 + cell_height * IFloat::from(*start_y) + offsets[si].1,
                 );
                 GridIter::between(&(0, 0), &(grid_density, grid_density))
                     .enumerate()
@@ -395,7 +452,10 @@ impl Space {
                     .sum::<IFloat>()
             })
             .sum();
-        total / float_density.pow(4)
+        for _ in 0..4 {
+            total = total / float_density;
+        }
+        total
     }
 
     fn gradient_descent(
@@ -421,13 +481,13 @@ impl Space {
             .iter_mut()
             .enumerate()
             .map(|(i, hole)| {
-                
-                let mut h = |l: &dyn Fn(&mut ((IFloat, IFloat), (IFloat, IFloat))) -> &mut IFloat| {
-                    *l(&mut otherself.holes[i]) = *l(hole) + epsilon;
-                    let gradient = otherself.permute::<ChaCha8Rng>(density, &mut get_rng());
-                    *l(&mut otherself.holes[i]) = *l(hole);
-                    gradient
-                };
+                let mut h =
+                    |l: &dyn Fn(&mut ((IFloat, IFloat), (IFloat, IFloat))) -> &mut IFloat| {
+                        *l(&mut otherself.holes[i]) = *l(hole) + epsilon;
+                        let gradient = otherself.permute::<ChaCha8Rng>(density, &mut get_rng());
+                        *l(&mut otherself.holes[i]) = *l(hole);
+                        gradient
+                    };
 
                 let g = |gradient| {
                     if neutral == gradient {
@@ -451,8 +511,8 @@ impl Space {
                 };
 
                 (
-                    f(h(&|x| &mut x.0.0), h(&|x| &mut x.0.1)),
-                    f(h(&|x| &mut x.1.0), h(&|x| &mut x.1.1)),
+                    f(h(&|x| &mut x.0 .0), h(&|x| &mut x.0 .1)),
+                    f(h(&|x| &mut x.1 .0), h(&|x| &mut x.1 .1)),
                 )
             })
             .collect::<Vec<_>>();
@@ -544,9 +604,10 @@ fn slope(values: &VecDeque<IFloat>) -> IFloat {
         .iter()
         .enumerate()
         .map(|(i, y)| (IFloat::from(i), y))
-        .fold((ZERO.clone(), ZERO.clone(), ZERO.clone(), ZERO.clone()), |(sx, sy, sxy, sx2), (x, &y)| {
-            (sx + x, sy + y, sxy + x * y, sx2 + x.pow(2))
-        });
+        .fold(
+            (ZERO.clone(), ZERO.clone(), ZERO.clone(), ZERO.clone()),
+            |(sx, sy, sxy, sx2), (x, &y)| (sx + x, sy + y, sxy + x * y, sx2 + x.pow(2)),
+        );
     let num = n * xy - x * y;
     let denom = n * x2 - x.pow(2);
     if denom == ZERO {
@@ -604,7 +665,12 @@ fn train_and_save(
 
             let gradient_magnitudes = gradients
                 .iter()
-                .map(|(a, b)| [dist(a, &(ZERO.clone(), ZERO.clone())).log10(), dist(b, &(ZERO.clone(), ZERO.clone())).log10()])
+                .map(|(a, b)| {
+                    [
+                        dist(a, &(ZERO.clone(), ZERO.clone())).log10(),
+                        dist(b, &(ZERO.clone(), ZERO.clone())).log10(),
+                    ]
+                })
                 .flatten()
                 .collect::<Vec<_>>();
 
@@ -637,7 +703,9 @@ fn train_and_save(
             gradients
         )?;
 
-        if loss_eval_window.len() >= loss_window_size && loss_window_slope.abs() < IFloat::from(1e-7) {
+        if loss_eval_window.len() >= loss_window_size
+            && loss_window_slope.abs() < IFloat::from(1e-7)
+        {
             println!("Gradients settled, ending simulation");
             break;
         }
@@ -668,7 +736,7 @@ fn train_and_save(
 fn main() -> std::io::Result<()> {
     for (mut space, name) in vec![
         // (Space::new_with_star_holes(4), "asterisk_2"),
-        (Space::new_with_random_segment_holes(3), "triple_3"),
+        (Space::new_with_random_segment_holes(3), "triple_4"),
         // (Space::new_with_random_segment_holes(5), "quintouple"),
         // (Space::new_with_random_segment_holes(6), "sextouple"),
         // (Space::new_with_random_segment_holes(7), "septouble"),
