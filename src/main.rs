@@ -12,6 +12,7 @@ use std::io::prelude::*;
 use std::ops::{Add, AddAssign, Div, Mul, Sub};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
+use std::vec::IntoIter;
 use std::{fs, iter::*};
 
 type IFloatType = i64;
@@ -109,7 +110,8 @@ impl Into<f32> for IFloat {
 impl Display for IFloat {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let fval: f64 = (*self).into();
-        write!(f, "{}", fval)?;
+        let precision = f.precision().unwrap_or(16);
+        write!(f, "{:.*}", precision, fval)?;
         Ok(())
     }
 }
@@ -190,8 +192,7 @@ const ZERO: IFloat = IFloat {
 fn dist(a: &Position, b: &Position) -> IFloat {
     let dx = a.0 - b.0;
     let dy = a.1 - b.1;
-    dx * dx + dy * dy
-    // dx.hypot(dy)
+    dx.hypot(dy)
     // dx.abs() + dy.abs()
 }
 
@@ -417,32 +418,37 @@ impl Space {
 
     fn exhaustive_test(&self, start: &Position, end: &Position) -> IFloat {
         let direct_distance = dist(start, end);
-        let mut fringe = VecDeque::from(vec![(ZERO.clone(), direct_distance, start.clone(), (0..self.holes.len()).collect::<Vec<_>>())]);
+        let mut fringe = VecDeque::from(vec![(
+            ZERO.clone(),
+            direct_distance,
+            start.clone()
+        )]);
         let mut min_distance = direct_distance;
         while !fringe.is_empty() {
-            let (traveled, direct_dist, pos, unvisited) = fringe.pop_front().unwrap();
+            let (traveled, direct_dist, pos) = fringe.pop_front().unwrap();
             if traveled > min_distance {
                 continue;
             } else {
                 min_distance = min_distance.min(traveled + direct_dist);
-                for i in unvisited.iter() {
-                    let hole = self.holes[*i];
-                    for new_fringe in [
-                        (
-                            traveled + dist(&hole.0, &pos),
-                            dist(&hole.1, &end),
-                            hole.1.clone(),
-                            unvisited.iter().filter(|&&x| x != *i).map(usize::clone).collect::<Vec<_>>()
-                        ),
-                        (
-                            traveled + dist(&hole.1, &pos),
-                            dist(&hole.0, &end),
-                            hole.0.clone(),
-                            unvisited.iter().filter(|&&x| x != *i).map(usize::clone).collect::<Vec<_>>()
-                        ),
-                    ] {
-                        if new_fringe.0 < min_distance {
-                            fringe.push_back(new_fringe);
+                for hole in self.holes.iter() {
+                    for (entrance, exit) in [(&hole.0, &hole.1), (&hole.1, &hole.0)] {
+                        let new_travel_dist = traveled + dist(entrance, &pos);
+                        if new_travel_dist < min_distance {
+                            let new_direct_dist = dist(exit, &end);
+                            fringe.insert(
+                                match fringe
+                                    .binary_search_by_key(&&new_direct_dist, |(_, d_dist, _)| {
+                                        d_dist
+                                    }) {
+                                    Ok(x) => x,
+                                    Err(x) => x,
+                                },
+                                (
+                                    new_travel_dist,
+                                    new_direct_dist,
+                                    exit.clone(),
+                                )
+                            );
                         }
                     }
                 }
@@ -476,8 +482,8 @@ impl Space {
             .enumerate()
             .map(|(si, (start_x, start_y))| {
                 let start = (
-                    self.bounds.0.0 + cell_width * IFloat::from(*start_x) + offsets[si].0,
-                    self.bounds.0.1 + cell_height * IFloat::from(*start_y) + offsets[si].1,
+                    self.bounds.0 .0 + cell_width * IFloat::from(*start_x) + offsets[si].0,
+                    self.bounds.0 .1 + cell_height * IFloat::from(*start_y) + offsets[si].1,
                 );
                 GridIter::between(&(0, 0), &(grid_density, grid_density))
                     .enumerate()
@@ -639,20 +645,19 @@ struct FfmpegOptions {
     framerate: usize,
 }
 
-fn slope(values: &VecDeque<IFloat>) -> IFloat {
-    let n = IFloat::from(values.len());
+fn slope(values: &VecDeque<f64>) -> f64 {
+    let n = values.len() as f64;
     let (x, y, xy, x2) = values
         .iter()
         .enumerate()
-        .map(|(i, y)| (IFloat::from(i), y))
-        .fold(
-            (ZERO.clone(), ZERO.clone(), ZERO.clone(), ZERO.clone()),
-            |(sx, sy, sxy, sx2), (x, &y)| (sx + x, sy + y, sxy + x * y, sx2 + x.pow(2)),
-        );
+        .map(|(i, y)| (i as f64, y))
+        .fold((0.0, 0.0, 0.0, 0.0), |(sx, sy, sxy, sx2), (x, &y)| {
+            (sx + x, sy + y, sxy + x * y, sx2 + x.powi(2))
+        });
     let num = n * xy - x * y;
-    let denom = n * x2 - x.pow(2);
-    if denom == ZERO {
-        ZERO.clone()
+    let denom = n * x2 - x.powi(2);
+    if denom == 0.0 {
+        0.0
     } else {
         num / denom
     }
@@ -662,7 +667,7 @@ fn train_and_save(
     space: &mut Space,
     name: String,
     max_iters: Option<usize>,
-    learn_rate: IFloat,
+    learn_rate: f64,
     epoch_size: usize,
     loss_window_size: usize,
     save_video: Option<FfmpegOptions>,
@@ -673,7 +678,7 @@ fn train_and_save(
     let mut logfile = File::create(format!("output/{}.log", name))?;
 
     let mut timestamp = SystemTime::now();
-    let mut loss_eval_window = VecDeque::with_capacity(loss_window_size + 1);
+    let mut loss_eval_window: VecDeque<f64> = VecDeque::with_capacity(loss_window_size + 1);
 
     for i in 0.. {
         if max_iters.map(|iters| i > iters).unwrap_or(false) {
@@ -692,10 +697,15 @@ fn train_and_save(
                     .collect(),
             )
         } else {
-            let (loss, seed, gradients) =
-                space.gradient_descent(epoch_size, true, learn_rate, IFloat::from(1e-8), None);
+            let (loss, seed, gradients) = space.gradient_descent(
+                epoch_size,
+                true,
+                learn_rate.into(),
+                IFloat::from(1e-8),
+                None,
+            );
 
-            loss_eval_window.push_back(loss.log10());
+            loss_eval_window.push_back(Into::<f64>::into(loss).log10());
             if loss_eval_window.len() > loss_window_size {
                 loss_eval_window.pop_front();
             }
@@ -744,9 +754,7 @@ fn train_and_save(
             gradients
         )?;
 
-        if loss_eval_window.len() >= loss_window_size
-            && loss_window_slope.abs() < IFloat::from(1e-7)
-        {
+        if loss_eval_window.len() >= loss_window_size && loss_window_slope.abs() < 1e-7 {
             println!("Gradients settled, ending simulation");
             break;
         }
@@ -774,28 +782,33 @@ fn train_and_save(
     Ok(())
 }
 
-fn main() -> std::io::Result<()> {
-    for (mut space, name) in vec![
-        (Space::new_with_random_holes(3), "triple_7"),
-    ] {
-        train_and_save(
-            &mut space,
-            name.to_string(),
-            None,
-            IFloat::from(0.1),
-            64,
-            200,
-            Some(FfmpegOptions { framerate: 60 }),
-        )?;
-    }
-    Ok(())
-}
-
-// fn main() {
-//     let space = Space::new_with_polyhedra_holes(3, 0.25.into());
-//     let result = space.exhaustive_test(&(0.1.into(), 0.1.into()), &(0.9.into(), 0.9.into()));
-//     println!("{result}");
+// fn main() -> std::io::Result<()> {
+//     for (mut space, name) in vec![(Space::new_with_random_holes(2), "double")] {
+//         train_and_save(
+//             &mut space,
+//             name.to_string(),
+//             None,
+//             0.1,
+//             56,
+//             200,
+//             Some(FfmpegOptions { framerate: 60 }),
+//         )?;
+//     }
+//     Ok(())
 // }
+
+fn main() {
+    let space = Space::new_with_aligned_holes(3);
+    space.exhaustive_test(&(0.1.into(), 0.1.into()), &(0.9.into(), 0.9.into()));
+    let mut logfile = File::create(format!("output/opt3_perf.log")).unwrap();
+    for i in 32..=64 {
+        let start = SystemTime::now();
+        let result = space.permute::<ChaCha8Rng>(i, &mut None);
+        let duration = SystemTime::now().duration_since(start).unwrap();
+        println!("{i}: {:.3}s, {result:.6}", duration.as_secs_f64());
+        writeln!(logfile, "{i},{},{result}", duration.as_millis()).unwrap();
+    }
+}
 
 // fn main() -> std::io::Result<()> {
 //     let mut space = Space::new_with_holes(vec![
