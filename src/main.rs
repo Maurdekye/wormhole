@@ -14,15 +14,17 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use std::{fs, iter::*};
 
 type IFloatType = i64;
-const SCALE_FACTOR: u32 = 32;
+const SCALE_FACTOR: u32 = 40;
 const MAX: IFloatType = IFloatType::MAX >> ((IFloatType::BITS - 1) - SCALE_FACTOR);
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, Ord)]
 struct IFloat {
     value: IFloatType,
 }
 
 impl IFloat {
+    const MAX: IFloat = IFloat { value: MAX };
+
     fn hypot(self, other: Self) -> Self {
         self * self + other * other
     }
@@ -343,7 +345,7 @@ impl Space {
         )
     }
 
-    fn test(&self, start: &Position, end: &Position) -> IFloat {
+    fn single_travel_test(&self, start: &Position, end: &Position) -> IFloat {
         let mut travel_dist = dist(start, end);
         for (hole_a, hole_b) in self.holes.iter() {
             let a_dist = dist(start, hole_a);
@@ -364,7 +366,7 @@ impl Space {
         travel_dist
     }
 
-    fn test_with_multi_travel(&self, start: &Position, end: &Position) -> IFloat {
+    fn greedy_test(&self, start: &Position, end: &Position) -> IFloat {
         let mut traveled = ZERO.clone();
         let mut current_pos = start.clone();
         let mut direct = dist(&current_pos, end);
@@ -412,6 +414,38 @@ impl Space {
         traveled
     }
 
+    fn exhaustive_test(&self, start: &Position, end: &Position) -> IFloat {
+        let direct_distance = dist(start, end);
+        let mut fringe = vec![(ZERO.clone(), direct_distance, start.clone(), (0..self.holes.len()).collect::<Vec<_>>())];
+        let mut min_distance = direct_distance;
+        while !fringe.is_empty() {
+            match fringe.iter().map(|(traveled, direct_dist, _, _)| *traveled + *direct_dist).min() {
+                Some(new_min_dist) => min_distance = min_distance.min(new_min_dist),
+                None => ()
+            };
+            fringe = fringe.into_iter().map(|(traveled, _, pos, unvisited)| {
+                unvisited.iter().map(|&i| {
+                    let hole = self.holes[i];
+                    [
+                        (
+                            traveled + dist(&hole.0, &pos),
+                            dist(&hole.1, &end),
+                            hole.1.clone(),
+                            unvisited.iter().filter(|&&x| x != i).map(usize::clone).collect::<Vec<_>>()
+                        ),
+                        (
+                            traveled + dist(&hole.1, &pos),
+                            dist(&hole.0, &end),
+                            hole.0.clone(),
+                            unvisited.iter().filter(|&&x| x != i).map(usize::clone).collect::<Vec<_>>()
+                        ),
+                    ]
+                }).flatten().filter(|(traveled, _, _, _)| *traveled < min_distance ).collect::<Vec<_>>()
+            }).flatten().collect::<Vec<_>>();
+        }
+        min_distance
+    }
+
     fn permute<T>(&self, grid_density: usize, random_placement: &mut Option<T>) -> IFloat
     where
         T: Rng,
@@ -447,7 +481,7 @@ impl Space {
                             self.bounds.0 .0 + cell_width * IFloat::from(end_x) + offsets[ei].0,
                             self.bounds.0 .1 + cell_height * IFloat::from(end_y) + offsets[ei].1,
                         );
-                        self.test_with_multi_travel(&start, &end)
+                        self.exhaustive_test(&start, &end)
                     })
                     .sum::<IFloat>()
             })
@@ -737,12 +771,7 @@ fn train_and_save(
 
 fn main() -> std::io::Result<()> {
     for (mut space, name) in vec![
-        // (Space::new_with_star_holes(4), "asterisk_2"),
-        (Space::new_with_random_holes(3), "triple_5"),
-        // (Space::new_with_random_segment_holes(5), "quintouple"),
-        // (Space::new_with_random_segment_holes(6), "sextouple"),
-        // (Space::new_with_random_segment_holes(7), "septouble"),
-        // (Space::new_with_random_segment_holes(8), "octouple"),
+        (Space::new_with_random_holes(3), "triple_7"),
     ] {
         train_and_save(
             &mut space,
@@ -756,6 +785,12 @@ fn main() -> std::io::Result<()> {
     }
     Ok(())
 }
+
+// fn main() {
+//     let space = Space::new_with_polyhedra_holes(3, 0.25.into());
+//     let result = space.exhaustive_test(&(0.1.into(), 0.1.into()), &(0.9.into(), 0.9.into()));
+//     println!("{result}");
+// }
 
 // fn main() -> std::io::Result<()> {
 //     let mut space = Space::new_with_holes(vec![
