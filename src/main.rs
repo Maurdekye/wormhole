@@ -3,6 +3,7 @@ use imageproc::drawing::{draw_filled_circle_mut, draw_line_segment_mut};
 use imageproc::map::map_pixels;
 use rand::prelude::*;
 use rand_chacha::ChaCha8Rng;
+use rayon::collections::vec_deque;
 use rayon::prelude::*;
 use std::collections::VecDeque;
 use std::fmt::Display;
@@ -416,32 +417,36 @@ impl Space {
 
     fn exhaustive_test(&self, start: &Position, end: &Position) -> IFloat {
         let direct_distance = dist(start, end);
-        let mut fringe = vec![(ZERO.clone(), direct_distance, start.clone(), (0..self.holes.len()).collect::<Vec<_>>())];
+        let mut fringe = VecDeque::from(vec![(ZERO.clone(), direct_distance, start.clone(), (0..self.holes.len()).collect::<Vec<_>>())]);
         let mut min_distance = direct_distance;
         while !fringe.is_empty() {
-            match fringe.iter().map(|(traveled, direct_dist, _, _)| *traveled + *direct_dist).min() {
-                Some(new_min_dist) => min_distance = min_distance.min(new_min_dist),
-                None => ()
-            };
-            fringe = fringe.into_iter().map(|(traveled, _, pos, unvisited)| {
-                unvisited.iter().map(|&i| {
-                    let hole = self.holes[i];
-                    [
+            let (traveled, direct_dist, pos, unvisited) = fringe.pop_front().unwrap();
+            if traveled > min_distance {
+                continue;
+            } else {
+                min_distance = min_distance.min(traveled + direct_dist);
+                for i in unvisited.iter() {
+                    let hole = self.holes[*i];
+                    for new_fringe in [
                         (
                             traveled + dist(&hole.0, &pos),
                             dist(&hole.1, &end),
                             hole.1.clone(),
-                            unvisited.iter().filter(|&&x| x != i).map(usize::clone).collect::<Vec<_>>()
+                            unvisited.iter().filter(|&&x| x != *i).map(usize::clone).collect::<Vec<_>>()
                         ),
                         (
                             traveled + dist(&hole.1, &pos),
                             dist(&hole.0, &end),
                             hole.0.clone(),
-                            unvisited.iter().filter(|&&x| x != i).map(usize::clone).collect::<Vec<_>>()
+                            unvisited.iter().filter(|&&x| x != *i).map(usize::clone).collect::<Vec<_>>()
                         ),
-                    ]
-                }).flatten().filter(|(traveled, _, _, _)| *traveled < min_distance ).collect::<Vec<_>>()
-            }).flatten().collect::<Vec<_>>();
+                    ] {
+                        if new_fringe.0 < min_distance {
+                            fringe.push_back(new_fringe);
+                        }
+                    }
+                }
+            }
         }
         min_distance
     }
