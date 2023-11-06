@@ -421,12 +421,13 @@ impl Space {
         let mut fringe = VecDeque::from(vec![(
             ZERO.clone(),
             direct_distance,
-            start.clone()
+            start.clone(),
+            self.holes.len()
         )]);
         let mut min_distance = direct_distance;
         while !fringe.is_empty() {
-            let (traveled, direct_dist, pos) = fringe.pop_front().unwrap();
-            if traveled > min_distance {
+            let (traveled, direct_dist, pos, traverse_count) = fringe.pop_front().unwrap();
+            if traverse_count <= 0 || traveled > min_distance {
                 continue;
             } else {
                 min_distance = min_distance.min(traveled + direct_dist);
@@ -437,7 +438,7 @@ impl Space {
                             let new_direct_dist = dist(exit, &end);
                             fringe.insert(
                                 match fringe
-                                    .binary_search_by_key(&&new_direct_dist, |(_, d_dist, _)| {
+                                    .binary_search_by_key(&&new_direct_dist, |(_, d_dist, _, _)| {
                                         d_dist
                                     }) {
                                     Ok(x) => x,
@@ -447,6 +448,7 @@ impl Space {
                                     new_travel_dist,
                                     new_direct_dist,
                                     exit.clone(),
+                                    traverse_count - 1
                                 )
                             );
                         }
@@ -799,7 +801,7 @@ fn train_and_save(
 
 fn main() {
     let space = Space::new_with_aligned_holes(3);
-    space.exhaustive_test(&(0.1.into(), 0.1.into()), &(0.9.into(), 0.9.into()));
+    // space.exhaustive_test(&(0.1.into(), 0.1.into()), &(0.9.into(), 0.9.into()));
     let mut logfile = File::create(format!("output/opt3_perf.log")).unwrap();
     for i in 32..=64 {
         let start = SystemTime::now();
