@@ -217,6 +217,47 @@ impl Space {
         traveled
     }
 
+    fn exhaustive_test(&self, start: &Position, end: &Position) -> f64 {
+        let direct_distance = dist(start, end);
+        let mut fringe = VecDeque::from(vec![(
+            0.0,
+            direct_distance,
+            start.clone()
+        )]);
+        let mut min_distance = direct_distance;
+        while !fringe.is_empty() {
+            let (traveled, direct_dist, pos) = fringe.pop_front().unwrap();
+            if traveled > min_distance {
+                continue;
+            } else {
+                min_distance = min_distance.min(traveled + direct_dist);
+                for hole in self.holes.iter() {
+                    for (entrance, exit) in [(&hole.0, &hole.1), (&hole.1, &hole.0)] {
+                        let new_travel_dist = traveled + dist(entrance, &pos);
+                        if new_travel_dist < min_distance {
+                            let new_direct_dist = dist(exit, &end);
+                            fringe.insert(
+                                match fringe
+                                    .binary_search_by(|(_, d_dist, _)| {
+                                        d_dist.partial_cmp(&&new_direct_dist).unwrap()
+                                    }) {
+                                    Ok(x) => x,
+                                    Err(x) => x,
+                                },
+                                (
+                                    new_travel_dist,
+                                    new_direct_dist,
+                                    exit.clone(),
+                                )
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        min_distance
+    }
+
     fn permute<T>(&self, grid_density: usize, random_placement: &mut Option<T>) -> f64
     where
         T: Rng,
@@ -523,27 +564,33 @@ fn train_and_save(
     Ok(())
 }
 
-fn main() -> std::io::Result<()> {
-    for (mut space, name) in vec![
-        // (Space::new_with_star_holes(4), "asterisk_2"),
-        (Space::new_with_random_segment_holes(3), "triple_3"),
-        // (Space::new_with_random_segment_holes(5), "quintouple"),
-        // (Space::new_with_random_segment_holes(6), "sextouple"),
-        // (Space::new_with_random_segment_holes(7), "septouble"),
-        // (Space::new_with_random_segment_holes(8), "octouple"),
-    ] {
-        train_and_save(
-            &mut space,
-            name.to_string(),
-            None,
-            0.1,
-            64,
-            200,
-            Some(FfmpegOptions { framerate: 60 }),
-        )?;
-    }
-    Ok(())
+fn main() {
+    let space = Space::new_with_aligned_holes(3);
+    let result = space.exhaustive_test(&(0.9, 0.9), &(0.1, 0.1));
+    println!("{result}");
 }
+
+// fn main() -> std::io::Result<()> {
+//     for (mut space, name) in vec![
+//         // (Space::new_with_star_holes(4), "asterisk_2"),
+//         (Space::new_with_random_segment_holes(3), "triple_3"),
+//         // (Space::new_with_random_segment_holes(5), "quintouple"),
+//         // (Space::new_with_random_segment_holes(6), "sextouple"),
+//         // (Space::new_with_random_segment_holes(7), "septouble"),
+//         // (Space::new_with_random_segment_holes(8), "octouple"),
+//     ] {
+//         train_and_save(
+//             &mut space,
+//             name.to_string(),
+//             None,
+//             0.1,
+//             64,
+//             200,
+//             Some(FfmpegOptions { framerate: 60 }),
+//         )?;
+//     }
+//     Ok(())
+// }
 
 // fn main() -> std::io::Result<()> {
 //     let mut space = Space::new_with_holes(vec![
