@@ -533,7 +533,7 @@ impl Space {
                                     new_travel_dist,
                                     new_direct_dist,
                                     exit.clone(),
-                                    untraversed_mask.clone().into_unset(i)
+                                    untraversed_mask.clone().into_unset(i),
                                 ),
                             );
                         }
@@ -869,20 +869,20 @@ fn train_and_save(
     Ok(())
 }
 
-// fn main() -> std::io::Result<()> {
-//     for (mut space, name) in vec![(Space::new_with_random_holes(2), "double_2")] {
-//         train_and_save(
-//             &mut space,
-//             name.to_string(),
-//             None,
-//             0.1,
-//             56,
-//             200,
-//             Some(FfmpegOptions { framerate: 60 }),
-//         )?;
-//     }
-//     Ok(())
-// }
+fn main() -> std::io::Result<()> {
+    for (mut space, name) in vec![(Space::new_with_random_holes(5), "quintouple_2")] {
+        train_and_save(
+            &mut space,
+            name.to_string(),
+            None,
+            0.1,
+            48,
+            120,
+            Some(FfmpegOptions { framerate: 60 }),
+        )?;
+    }
+    Ok(())
+}
 
 // fn main() {
 //     let space = Space::new_with_aligned_holes(3);
@@ -897,18 +897,17 @@ fn train_and_save(
 //     }
 // }
 
-fn main() {
-    let space = Space::new_with_aligned_holes(3);
-    // space.exhaustive_test(&(0.1.into(), 0.1.into()), &(0.9.into(), 0.9.into()));
-    let mut logfile = File::create(format!("output/opt5_perf.log")).unwrap();
-    for i in 32..=64 {
-        let start = SystemTime::now();
-        let result = space.permute::<ChaCha8Rng>(i, &mut None);
-        let duration = SystemTime::now().duration_since(start).unwrap();
-        println!("{i}: {:.3}s, {result:.6}", duration.as_secs_f64());
-        writeln!(logfile, "{i},{},{result}", duration.as_millis()).unwrap();
-    }
-}
+// fn main() {
+//     let mut logfile = File::create(format!("output/holecount_perf.log")).unwrap();
+//     for i in 1..=8 {
+//         let space = Space::new_with_aligned_holes(i);
+//         let start = SystemTime::now();
+//         let result = space.permute::<ChaCha8Rng>(64, &mut None);
+//         let duration = SystemTime::now().duration_since(start).unwrap();
+//         println!("{i}: {:.3}s, {result:.6}", duration.as_secs_f64());
+//         writeln!(logfile, "{i},{},{result}", duration.as_millis()).unwrap();
+//     }
+// }
 
 // fn main() -> std::io::Result<()> {
 //     let mut space = Space::new_with_holes(vec![
