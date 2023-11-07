@@ -603,6 +603,7 @@ struct LearnSettings {
     learn_rate_reductions: usize,
     learn_rate_reduction_ratio: f64,
     loss_window_size: usize,
+    reductions_loss_window_size: usize,
     max_iters: Option<usize>,
     epoch_size: usize,
 }
@@ -623,6 +624,7 @@ fn train_and_save(
         VecDeque::with_capacity(learn_settings.loss_window_size + 1);
     let mut learn_reductions = 0;
     let mut current_learn_rate = learn_settings.init_learn_rate;
+    let mut loss_window_size = learn_settings.loss_window_size;
 
     for i in 0.. {
         if learn_settings
@@ -701,13 +703,14 @@ fn train_and_save(
         let img = space.render();
         img.save(format!("output/{}/iter-{}.png", name, i)).unwrap();
 
-        if loss_eval_window.len() >= learn_settings.loss_window_size
+        if loss_eval_window.len() >= loss_window_size
             && loss_window_slope.abs() < learn_settings.loss_slope_epsilon
         {
             if learn_reductions < learn_settings.learn_rate_reductions {
                 current_learn_rate *= learn_settings.learn_rate_reduction_ratio;
                 learn_reductions += 1;
                 loss_eval_window.clear();
+                loss_window_size = learn_settings.reductions_loss_window_size;
                 println!(
                     "Reducing learning rate to {current_learn_rate} {learn_reductions}/{} times",
                     learn_settings.learn_rate_reductions
@@ -748,9 +751,10 @@ fn main() -> std::io::Result<()> {
                 training_epsilon: 1e-8,
                 loss_slope_epsilon: 1e-7,
                 init_learn_rate: 10.0,
-                learn_rate_reductions: 2,
-                learn_rate_reduction_ratio: 0.1,
-                loss_window_size: 100,
+                learn_rate_reductions: 5,
+                learn_rate_reduction_ratio: 0.5,
+                loss_window_size: 150,
+                reductions_loss_window_size: 40,
                 max_iters: None,
                 epoch_size: 64,
             },
