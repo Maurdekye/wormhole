@@ -9,7 +9,7 @@ use std::collections::VecDeque;
 use std::fmt::Display;
 use std::fs::File;
 use std::io::prelude::*;
-use std::ops::{Add, AddAssign, Div, Mul, Sub};
+use std::ops::{Add, AddAssign, Div, Mul, Range, Sub};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::vec::IntoIter;
@@ -194,6 +194,89 @@ fn dist(a: &Position, b: &Position) -> IFloat {
     let dy = a.1 - b.1;
     dx.hypot(dy)
     // dx.abs() + dy.abs()
+}
+
+#[derive(Clone)]
+struct Bitmask {
+    mask: u64,
+    capacity: usize,
+}
+
+impl Bitmask {
+    fn with_capacity(capacity: usize) -> Bitmask {
+        Bitmask {
+            mask: 0,
+            capacity: capacity,
+        }
+    }
+
+    fn new() -> Bitmask {
+        Self::with_capacity(u32::BITS as usize)
+    }
+
+    fn contains(&self, value: usize) -> bool {
+        self.mask & (1 << value) != 0
+    }
+
+    fn into_set(self, value: usize) -> Self {
+        Bitmask {
+            mask: self.mask | (1u64 << value),
+            capacity: self.capacity,
+        }
+    }
+
+    fn into_unset(self, value: usize) -> Self {
+        Bitmask {
+            mask: self.mask & !(1u64 << value),
+            capacity: self.capacity,
+        }
+    }
+
+    fn iter(&self) -> BitmaskIter {
+        BitmaskIter {
+            mask: self.mask,
+            capacity: self.capacity,
+            position: 0,
+            pos_bit: 1,
+        }
+    }
+}
+
+impl From<Range<usize>> for Bitmask {
+    fn from(value: Range<usize>) -> Self {
+        let mut mask = Bitmask::with_capacity(value.end);
+        for i in value {
+            mask.mask |= 1u64 << i;
+        }
+        mask
+    }
+}
+
+struct BitmaskIter {
+    mask: u64,
+    capacity: usize,
+    position: usize,
+    pos_bit: u64,
+}
+
+impl Iterator for BitmaskIter {
+    type Item = usize;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.position >= self.capacity {
+            return None;
+        }
+        while self.mask & self.pos_bit == 0 {
+            self.position += 1;
+            self.pos_bit <<= 1;
+            if self.position >= self.capacity {
+                return None;
+            }
+        }
+        self.position += 1;
+        self.pos_bit <<= 1;
+        Some(self.position - 1)
+    }
 }
 
 struct GridIter {
@@ -418,20 +501,22 @@ impl Space {
 
     fn exhaustive_test(&self, start: &Position, end: &Position) -> IFloat {
         let direct_distance = dist(start, end);
-        let mut fringe = VecDeque::from(vec![(
+        let mut fringe = VecDeque::with_capacity(self.holes.len() * self.holes.len() * 2);
+        fringe.push_back((
             ZERO.clone(),
             direct_distance,
             start.clone(),
-            self.holes.len()
-        )]);
+            Bitmask::from(0..self.holes.len()),
+        ));
         let mut min_distance = direct_distance;
         while !fringe.is_empty() {
-            let (traveled, direct_dist, pos, traverse_count) = fringe.pop_front().unwrap();
-            if traverse_count <= 0 || traveled > min_distance {
+            let (traveled, direct_dist, pos, untraversed_mask) = fringe.pop_front().unwrap();
+            if traveled > min_distance {
                 continue;
             } else {
                 min_distance = min_distance.min(traveled + direct_dist);
-                for hole in self.holes.iter() {
+                for i in untraversed_mask.iter() {
+                    let hole = self.holes[i];
                     for (entrance, exit) in [(&hole.0, &hole.1), (&hole.1, &hole.0)] {
                         let new_travel_dist = traveled + dist(entrance, &pos);
                         if new_travel_dist < min_distance {
@@ -448,8 +533,8 @@ impl Space {
                                     new_travel_dist,
                                     new_direct_dist,
                                     exit.clone(),
-                                    traverse_count - 1
-                                )
+                                    untraversed_mask.clone().into_unset(i)
+                                ),
                             );
                         }
                     }
@@ -785,7 +870,7 @@ fn train_and_save(
 }
 
 // fn main() -> std::io::Result<()> {
-//     for (mut space, name) in vec![(Space::new_with_random_holes(2), "double")] {
+//     for (mut space, name) in vec![(Space::new_with_random_holes(2), "double_2")] {
 //         train_and_save(
 //             &mut space,
 //             name.to_string(),
@@ -799,10 +884,23 @@ fn train_and_save(
 //     Ok(())
 // }
 
+// fn main() {
+//     let space = Space::new_with_aligned_holes(3);
+//     // space.exhaustive_test(&(0.1.into(), 0.1.into()), &(0.9.into(), 0.9.into()));
+//     let mut logfile = File::create(format!("output/opt5_perf.log")).unwrap();
+//     for i in 32..=64 {
+//         let start = SystemTime::now();
+//         let result = space.permute::<ChaCha8Rng>(i, &mut None);
+//         let duration = SystemTime::now().duration_since(start).unwrap();
+//         println!("{i}: {:.3}s, {result:.6}", duration.as_secs_f64());
+//         writeln!(logfile, "{i},{},{result}", duration.as_millis()).unwrap();
+//     }
+// }
+
 fn main() {
     let space = Space::new_with_aligned_holes(3);
     // space.exhaustive_test(&(0.1.into(), 0.1.into()), &(0.9.into(), 0.9.into()));
-    let mut logfile = File::create(format!("output/opt3_perf.log")).unwrap();
+    let mut logfile = File::create(format!("output/opt5_perf.log")).unwrap();
     for i in 32..=64 {
         let start = SystemTime::now();
         let result = space.permute::<ChaCha8Rng>(i, &mut None);

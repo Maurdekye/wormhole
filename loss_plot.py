@@ -26,17 +26,16 @@ def main(file_path):
     # Handle any zero values to avoid log10 issues
     slope_log_values = [np.log10(abs(slope)) if slope != 0 else float('-inf') for slope in slope_values]
 
-    loss_log_values = [np.log10(abs(loss)) if loss != 0 else float('-inf') for loss in loss_values]
+    # loss_log_values = [np.log10(abs(loss)) if loss != 0 else float('-inf') for loss in loss_values]
 
     # Plot the loss values on the left y-axis
     fig, ax1 = plt.subplots()
 
     color = 'tab:red'
     ax1.set_xlabel('Iterations')
-    ax1.set_ylabel('Log10 |Loss|', color=color)
-    ax1.plot(iterations, loss_log_values, color=color)
-    ax1.tick_params(axis='y', labelcolor=color)
+    ax1.set_ylabel('Loss', color=color)
     ax1.plot(iterations, loss_values, color=color)
+    ax1.tick_params(axis='y', labelcolor=color)
 
     # Create a second y-axis for the log10 of the slope values
     ax2 = ax1.twinx()  
