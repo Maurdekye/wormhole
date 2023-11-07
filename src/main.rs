@@ -95,6 +95,14 @@ impl From<u32> for IFloat {
     }
 }
 
+impl From<i32> for IFloat {
+    fn from(x: i32) -> IFloat {
+        IFloat {
+            value: ((x as f64) * MAX as f64) as IFloatType,
+        }
+    }
+}
+
 impl Into<f64> for IFloat {
     fn into(self) -> f64 {
         (self.value as f64) / MAX as f64
@@ -104,6 +112,12 @@ impl Into<f64> for IFloat {
 impl Into<f32> for IFloat {
     fn into(self) -> f32 {
         (self.value as f32) / MAX as f32
+    }
+}
+
+impl Into<i32> for IFloat {
+    fn into(self) -> i32 {
+        ((self.value as f32) / MAX as f32) as i32
     }
 }
 
@@ -322,19 +336,17 @@ impl Iterator for GridIter {
 #[derive(Clone, Debug)]
 struct Space {
     bounds: (Position, Position),
-    holes: Vec<(Position, Position)>,
-    hole_multiplier: IFloat,
+    holes: Vec<Position>,
 }
 
 impl Space {
-    fn new_with_holes(holes: Vec<(Position, Position)>) -> Space {
+    fn new_with_holes(holes: Vec<Position>) -> Space {
         Space {
             bounds: (
                 (IFloat::from(ZERO.clone()), IFloat::from(ZERO.clone())),
                 (IFloat::from(1.0), IFloat::from(1.0)),
             ),
             holes: holes,
-            hole_multiplier: ZERO.clone(),
         }
     }
 
@@ -342,29 +354,12 @@ impl Space {
         Space::new_with_holes(Vec::new())
     }
 
-    fn new_with_random_segment_holes(n: usize) -> Space {
-        Space::new_with_holes(
-            (0..n)
-                .map(|_| {
-                    let length = IFloat::from(0.02);
-                    let center: (IFloat, IFloat) = (IFloat::random(), IFloat::random());
-                    let angle: IFloat = IFloat::random() * PI * IFloat::from(2.0);
-                    let (s, c) = angle.sin_cos();
-                    let radius = (length * s, length * c);
-                    let start = (center.0 + radius.0, center.1 + radius.1);
-                    let end = (center.0 - radius.0, center.1 - radius.1);
-                    (start, end)
-                })
-                .collect(),
-        )
-    }
-
     fn new_with_aligned_holes(n: usize) -> Space {
         Space::new_with_holes(
             (1..=n)
                 .map(|i| {
                     let x = IFloat::from(i) / IFloat::from(n + 1);
-                    ((x, IFloat::from(0.35)), (x, IFloat::from(0.65)))
+                    (x, IFloat::from(0.5))
                 })
                 .collect(),
         )
@@ -376,20 +371,10 @@ impl Space {
                 .map(|i| {
                     let angle_start = (IFloat::from(i) / IFloat::from(n)) * IFloat::from(2.0) * PI
                         + gap / IFloat::from(2.0);
-                    let (s_a, c_a) = angle_start.sin_cos();
-                    let angle_end =
-                        (IFloat::from(i + 1) / IFloat::from(n)) * IFloat::from(2.0) * PI
-                            - gap / IFloat::from(2.0);
-                    let (s_b, c_b) = angle_end.sin_cos();
+                    let (s, c) = angle_start.sin_cos();
                     (
-                        (
-                            IFloat::from(0.5) + s_a / IFloat::from(4.0),
-                            IFloat::from(0.5) + c_a / IFloat::from(4.0),
-                        ),
-                        (
-                            IFloat::from(0.5) + s_b / IFloat::from(4.0),
-                            IFloat::from(0.5) + c_b / IFloat::from(4.0),
-                        ),
+                        IFloat::from(0.5) + s / IFloat::from(4.0),
+                        IFloat::from(0.5) + c / IFloat::from(4.0),
                     )
                 })
                 .collect(),
@@ -399,149 +384,33 @@ impl Space {
     fn new_with_random_holes(n: usize) -> Space {
         Space::new_with_holes(
             (0..n)
-                .map(|_| {
-                    (
-                        (IFloat::random(), IFloat::random()),
-                        (IFloat::random(), IFloat::random()),
-                    )
-                })
+                .map(|_| (IFloat::random(), IFloat::random()))
                 .collect(),
         )
-    }
-
-    fn new_with_star_holes(n: usize) -> Space {
-        Space::new_with_holes(
-            (0..n)
-                .map(|i| {
-                    let angle = (IFloat::from(i) / IFloat::from(n)) * PI;
-                    let (s, c) = angle.sin_cos();
-                    (
-                        (
-                            IFloat::from(0.5) + s / IFloat::from(2.0),
-                            IFloat::from(0.5) + c / IFloat::from(2.0),
-                        ),
-                        (
-                            IFloat::from(0.5) - s / IFloat::from(2.0),
-                            IFloat::from(0.5) - c / IFloat::from(2.0),
-                        ),
-                    )
-                })
-                .collect(),
-        )
-    }
-
-    fn single_travel_test(&self, start: &Position, end: &Position) -> IFloat {
-        let mut travel_dist = dist(start, end);
-        for (hole_a, hole_b) in self.holes.iter() {
-            let a_dist = dist(start, hole_a);
-            let b_dist = dist(start, hole_b);
-            let hole_dist = if a_dist < b_dist {
-                a_dist + dist(hole_b, end)
-            } else {
-                b_dist + dist(hole_a, end)
-            } + if self.hole_multiplier > ZERO.clone() {
-                dist(hole_a, hole_b)
-            } else {
-                IFloat::from(ZERO.clone())
-            };
-            if hole_dist < travel_dist {
-                travel_dist = hole_dist;
-            }
-        }
-        travel_dist
-    }
-
-    fn greedy_test(&self, start: &Position, end: &Position) -> IFloat {
-        let mut traveled = ZERO.clone();
-        let mut current_pos = start.clone();
-        let mut direct = dist(&current_pos, end);
-        for _ in 0..self.holes.len() + 1 {
-            match self
-                .holes
-                .iter()
-                .map(|hole| {
-                    let hole_travel = if self.hole_multiplier > ZERO.clone() {
-                        dist(&hole.0, &hole.1) * IFloat::from(self.hole_multiplier)
-                    } else {
-                        ZERO
-                    };
-                    [
-                        (
-                            dist(&hole.0, &current_pos) + hole_travel,
-                            dist(&hole.1, &end),
-                            &hole.1,
-                        ),
-                        (
-                            dist(&hole.1, &current_pos) + hole_travel,
-                            dist(&hole.0, &end),
-                            &hole.0,
-                        ),
-                    ]
-                })
-                .flatten()
-                .filter(|(travel, new_dist, _)| *travel + *new_dist < direct)
-                .min_by(|(travel_a, new_dist_a, _), (travel_b, new_dist_b, _)| {
-                    (*travel_a + *new_dist_a)
-                        .partial_cmp(&(*travel_b + *new_dist_b))
-                        .unwrap()
-                }) {
-                None => {
-                    traveled += direct;
-                    break;
-                }
-                Some((travel, new_direct, new_pos)) => {
-                    current_pos = new_pos.clone();
-                    traveled += travel;
-                    direct = new_direct;
-                }
-            }
-        }
-        traveled
     }
 
     fn exhaustive_test(&self, start: &Position, end: &Position) -> IFloat {
         let direct_distance = dist(start, end);
-        let mut fringe = VecDeque::with_capacity(self.holes.len() * self.holes.len() * 2);
-        fringe.push_back((
-            ZERO.clone(),
-            direct_distance,
-            start.clone(),
-            Bitmask::from(0..self.holes.len()),
-        ));
-        let mut min_distance = direct_distance;
-        while !fringe.is_empty() {
-            let (traveled, direct_dist, pos, untraversed_mask) = fringe.pop_front().unwrap();
-            if traveled > min_distance {
-                continue;
-            } else {
-                min_distance = min_distance.min(traveled + direct_dist);
-                for i in untraversed_mask.iter() {
-                    let hole = self.holes[i];
-                    for (entrance, exit) in [(&hole.0, &hole.1), (&hole.1, &hole.0)] {
-                        let new_travel_dist = traveled + dist(entrance, &pos);
-                        if new_travel_dist < min_distance {
-                            let new_direct_dist = dist(exit, &end);
-                            fringe.insert(
-                                match fringe
-                                    .binary_search_by_key(&&new_direct_dist, |(_, d_dist, _, _)| {
-                                        d_dist
-                                    }) {
-                                    Ok(x) => x,
-                                    Err(x) => x,
-                                },
-                                (
-                                    new_travel_dist,
-                                    new_direct_dist,
-                                    exit.clone(),
-                                    untraversed_mask.clone().into_unset(i),
-                                ),
-                            );
-                        }
-                    }
-                }
+        let mut holes = self.holes.iter();
+        let first_hole = holes.next().unwrap();
+        let mut closest_entrance_hole = first_hole;
+        let mut closest_entrance_hole_distance = dist(start, first_hole);
+        let mut closest_exit_hole = first_hole;
+        let mut closest_exit_hole_distance = dist(end, first_hole);
+        for hole in holes {
+            let entrance_distance = dist(hole, start);
+            if entrance_distance < closest_entrance_hole_distance {
+                closest_entrance_hole = hole;
+                closest_entrance_hole_distance = entrance_distance;
+            }
+            let exit_distance = dist(hole, end);
+            if exit_distance < closest_exit_hole_distance {
+                closest_exit_hole = hole;
+                closest_exit_hole_distance = exit_distance;
             }
         }
-        min_distance
+        let hole_travel = closest_entrance_hole_distance + closest_exit_hole_distance;
+        hole_travel.min(direct_distance)
     }
 
     fn permute<T>(&self, grid_density: usize, random_placement: &mut Option<T>) -> IFloat
@@ -597,7 +466,7 @@ impl Space {
         temperature: IFloat,
         epsilon: IFloat,
         seed: Option<u64>,
-    ) -> (IFloat, u64, Vec<(Position, Position)>) {
+    ) -> (IFloat, u64, Vec<Position>) {
         let mut otherself = self.clone();
         let seed = seed.unwrap_or_else(|| rand::random::<u64>());
         let get_rng = || {
@@ -614,14 +483,13 @@ impl Space {
             .iter_mut()
             .enumerate()
             .map(|(i, hole)| {
-                let mut h =
-                    |l: &dyn Fn(&mut ((IFloat, IFloat), (IFloat, IFloat))) -> &mut IFloat| {
-                        *l(&mut otherself.holes[i]) = *l(hole) + epsilon;
-                        let gradient = otherself.permute::<ChaCha8Rng>(density, &mut get_rng());
-                        // println!("gradient: {gradient}");
-                        *l(&mut otherself.holes[i]) = *l(hole);
-                        gradient
-                    };
+                let mut h = |l: &dyn Fn(&mut (IFloat, IFloat)) -> &mut IFloat| {
+                    *l(&mut otherself.holes[i]) = *l(hole) + epsilon;
+                    let gradient = otherself.permute::<ChaCha8Rng>(density, &mut get_rng());
+                    // println!("gradient: {gradient}");
+                    *l(&mut otherself.holes[i]) = *l(hole);
+                    gradient
+                };
 
                 let g = |gradient| {
                     if neutral == gradient {
@@ -644,10 +512,7 @@ impl Space {
                     }
                 };
 
-                (
-                    f(h(&|x| &mut x.0 .0), h(&|x| &mut x.0 .1)),
-                    f(h(&|x| &mut x.1 .0), h(&|x| &mut x.1 .1)),
-                )
+                (f(h(&|x| &mut x.0), h(&|x| &mut x.1)))
             })
             .collect::<Vec<_>>();
         (
@@ -656,12 +521,10 @@ impl Space {
             gradients
                 .into_iter()
                 .zip(self.holes.iter_mut())
-                .map(|((start, end), hole)| {
-                    hole.0 .0 += start.0 * temperature;
-                    hole.0 .1 += start.1 * temperature;
-                    hole.1 .0 += end.0 * temperature;
-                    hole.1 .1 += end.1 * temperature;
-                    (start, end)
+                .map(|(gradient, hole)| {
+                    hole.0 += gradient.0 * temperature;
+                    hole.1 += gradient.1 * temperature;
+                    gradient
                 })
                 .collect(),
         )
@@ -697,32 +560,20 @@ impl Space {
             Rgb([220, 220, 220]),
         );
         for hole in self.holes.iter() {
-            let (start, end) = hole;
             let (bound_width, bound_height) = (
                 self.bounds.1 .0 - self.bounds.0 .0,
                 self.bounds.1 .1 - self.bounds.0 .1,
             );
-            let start_pixel = (
-                (((start.0 - self.bounds.0 .0) / bound_width) * IFloat::from(dims.0)).into(),
-                (((start.1 - self.bounds.0 .1) / bound_height) * IFloat::from(dims.1)).into(),
-            );
-            let end_pixel = (
-                (((end.0 - self.bounds.0 .0) / bound_width) * IFloat::from(dims.0)).into(),
-                (((end.1 - self.bounds.0 .1) / bound_height) * IFloat::from(dims.1)).into(),
+            let hole_pixel: (i32, i32) = (
+                (((hole.0 - self.bounds.0 .0) / bound_width) * IFloat::from(dims.0)).into(),
+                (((hole.1 - self.bounds.0 .1) / bound_height) * IFloat::from(dims.1)).into(),
             );
             draw_filled_circle_mut(
                 &mut img,
-                (|(a, b)| (a as i32, b as i32))(start_pixel),
+                (|(a, b)| (a as i32, b as i32))(hole_pixel),
                 2,
                 Rgb([0, 0, 0]),
             );
-            draw_filled_circle_mut(
-                &mut img,
-                (|(a, b)| (a as i32, b as i32))(end_pixel),
-                2,
-                Rgb([0, 0, 0]),
-            );
-            draw_line_segment_mut(&mut img, start_pixel, end_pixel, Rgb([128, 128, 128]));
         }
         img
     }
@@ -780,7 +631,7 @@ fn train_and_save(
                     .permute::<ChaCha8Rng>(epoch_size, &mut Some(SeedableRng::seed_from_u64(seed))),
                 seed,
                 (0..space.holes.len())
-                    .map(|_| ((ZERO.clone(), ZERO.clone()), (ZERO.clone(), ZERO.clone())))
+                    .map(|_| (ZERO.clone(), ZERO.clone()))
                     .collect(),
             )
         } else {
@@ -803,13 +654,7 @@ fn train_and_save(
 
             let gradient_magnitudes = gradients
                 .iter()
-                .map(|(a, b)| {
-                    [
-                        dist(a, &(ZERO.clone(), ZERO.clone())).log10(),
-                        dist(b, &(ZERO.clone(), ZERO.clone())).log10(),
-                    ]
-                })
-                .flatten()
+                .map(|g| dist(g, &(ZERO.clone(), ZERO.clone())).log10())
                 .collect::<Vec<_>>();
 
             println!(
@@ -870,14 +715,14 @@ fn train_and_save(
 }
 
 fn main() -> std::io::Result<()> {
-    for (mut space, name) in vec![(Space::new_with_random_holes(5), "quintouple_2")] {
+    for (mut space, name) in vec![(Space::new_with_random_holes(5), "global_1")] {
         train_and_save(
             &mut space,
             name.to_string(),
             None,
             0.1,
-            48,
-            120,
+            64,
+            200,
             Some(FfmpegOptions { framerate: 60 }),
         )?;
     }
