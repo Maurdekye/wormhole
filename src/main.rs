@@ -728,7 +728,7 @@ impl Space {
     }
 }
 
-struct FfmpegOptions {
+struct FfmpegSettings {
     framerate: usize,
 }
 
@@ -750,14 +750,23 @@ fn slope(values: &VecDeque<f64>) -> f64 {
     }
 }
 
+struct LearnSettings {
+    training_epsilon: f64,
+    loss_slope_epsilon: f64,
+    init_learn_rate: f64,
+    learn_rate_reductions: usize,
+    learn_rate_reduction_ratio: f64,
+    loss_window_size: usize,
+    reductions_loss_window_size: usize,
+    max_iters: Option<usize>,
+    epoch_size: usize,
+}
+
 fn train_and_save(
     space: &mut Space,
     name: String,
-    max_iters: Option<usize>,
-    learn_rate: f64,
-    epoch_size: usize,
-    loss_window_size: usize,
-    save_video: Option<FfmpegOptions>,
+    learn_settings: LearnSettings,
+    save_video: Option<FfmpegSettings>,
 ) -> std::io::Result<()> {
     println!("Beginning training of {}", name);
 
@@ -765,10 +774,18 @@ fn train_and_save(
     let mut logfile = File::create(format!("output/{}.log", name))?;
 
     let mut timestamp = SystemTime::now();
-    let mut loss_eval_window: VecDeque<f64> = VecDeque::with_capacity(loss_window_size + 1);
+    let mut loss_eval_window: VecDeque<f64> =
+        VecDeque::with_capacity(learn_settings.loss_window_size + 1);
+    let mut learn_reductions = 0;
+    let mut current_learn_rate = learn_settings.init_learn_rate;
+    let mut loss_window_size = learn_settings.loss_window_size;
 
     for i in 0.. {
-        if max_iters.map(|iters| i > iters).unwrap_or(false) {
+        if learn_settings
+            .max_iters
+            .map(|iters| i > iters)
+            .unwrap_or(false)
+        {
             break;
         }
 
@@ -776,8 +793,10 @@ fn train_and_save(
             // default values to record the 0th iteration
             let seed = rand::random::<u64>();
             (
-                space
-                    .permute::<ChaCha8Rng>(epoch_size, &mut Some(SeedableRng::seed_from_u64(seed))),
+                space.permute::<ChaCha8Rng>(
+                    learn_settings.epoch_size,
+                    &mut Some(SeedableRng::seed_from_u64(seed)),
+                ),
                 seed,
                 (0..space.holes.len())
                     .map(|_| ((ZERO.clone(), ZERO.clone()), (ZERO.clone(), ZERO.clone())))
@@ -785,15 +804,15 @@ fn train_and_save(
             )
         } else {
             let (loss, seed, gradients) = space.gradient_descent(
-                epoch_size,
+                learn_settings.epoch_size,
                 true,
-                learn_rate.into(),
-                IFloat::from(1e-8),
+                current_learn_rate.into(),
+                IFloat::from(learn_settings.training_epsilon),
                 None,
             );
 
             loss_eval_window.push_back(Into::<f64>::into(loss).log10());
-            if loss_eval_window.len() > loss_window_size {
+            if loss_eval_window.len() > learn_settings.loss_window_size {
                 loss_eval_window.pop_front();
             }
 
@@ -841,13 +860,26 @@ fn train_and_save(
             gradients
         )?;
 
-        if loss_eval_window.len() >= loss_window_size && loss_window_slope.abs() < 1e-7 {
-            println!("Gradients settled, ending simulation");
-            break;
-        }
-
         let img = space.render();
         img.save(format!("output/{}/iter-{}.png", name, i)).unwrap();
+
+        if loss_eval_window.len() >= loss_window_size
+            && loss_window_slope.abs() < learn_settings.loss_slope_epsilon
+        {
+            if learn_reductions < learn_settings.learn_rate_reductions {
+                current_learn_rate *= learn_settings.learn_rate_reduction_ratio;
+                learn_reductions += 1;
+                loss_eval_window.clear();
+                loss_window_size = learn_settings.reductions_loss_window_size;
+                println!(
+                    "Reducing learning rate to {current_learn_rate} {learn_reductions}/{} times",
+                    learn_settings.learn_rate_reductions
+                );
+            } else {
+                println!("Gradients settled, ending simulation");
+                break;
+            }
+        }
     }
     match save_video {
         Some(ffmpeg_options) => {
@@ -870,15 +902,23 @@ fn train_and_save(
 }
 
 fn main() -> std::io::Result<()> {
-    for (mut space, name) in vec![(Space::new_with_random_holes(5), "quintouple_2")] {
+    for i in 32..=32 {
+        let mut space = Space::new_with_random_holes(i);
         train_and_save(
             &mut space,
-            name.to_string(),
-            None,
-            0.1,
-            48,
-            120,
-            Some(FfmpegOptions { framerate: 60 }),
+            format!("{i}_holes_2"),
+            LearnSettings {
+                training_epsilon: 1e-8,
+                loss_slope_epsilon: 1e-7,
+                init_learn_rate: 10.0,
+                learn_rate_reductions: 5,
+                learn_rate_reduction_ratio: 0.5,
+                loss_window_size: 150,
+                reductions_loss_window_size: 40,
+                max_iters: None,
+                epoch_size: 64,
+            },
+            Some(FfmpegSettings { framerate: 60 }),
         )?;
     }
     Ok(())
