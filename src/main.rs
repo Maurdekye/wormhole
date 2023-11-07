@@ -1,25 +1,282 @@
-use core::panic;
-use image::{ImageBuffer, Rgb, RgbImage};
+use image::{Rgb, RgbImage};
 use imageproc::drawing::{draw_filled_circle_mut, draw_line_segment_mut};
 use imageproc::map::map_pixels;
 use rand::prelude::*;
 use rand_chacha::ChaCha8Rng;
+use rayon::collections::vec_deque;
 use rayon::prelude::*;
 use std::collections::VecDeque;
-use std::f32::consts::{self, PI};
-use std::fs::{File, OpenOptions};
+use std::fmt::Display;
+use std::fs::File;
 use std::io::prelude::*;
+use std::ops::{Add, AddAssign, Div, Mul, Range, Sub};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
+use std::vec::IntoIter;
 use std::{fs, iter::*};
 
-type Position = (f64, f64);
+type IFloatType = i64;
+const SCALE_FACTOR: u32 = 40;
+const MAX: IFloatType = IFloatType::MAX >> ((IFloatType::BITS - 1) - SCALE_FACTOR);
 
-fn dist(a: &Position, b: &Position) -> f64 {
+#[derive(Clone, Copy, Debug, Eq, Ord)]
+struct IFloat {
+    value: IFloatType,
+}
+
+impl IFloat {
+    const MAX: IFloat = IFloat { value: MAX };
+
+    fn hypot(self, other: Self) -> Self {
+        self * self + other * other
+    }
+
+    fn sin_cos(self) -> (Self, Self) {
+        let fval: f64 = self.into();
+        let (s, c) = fval.sin_cos();
+        (IFloat::from(s), IFloat::from(c))
+    }
+
+    fn random_with_rng<T: Rng>(rng: &mut T) -> Self {
+        IFloat {
+            value: rng.gen::<IFloatType>().abs() % MAX,
+        }
+    }
+
+    fn random() -> Self {
+        IFloat {
+            value: rand::random::<IFloatType>().abs() % MAX,
+        }
+    }
+
+    fn map<T>(self, f: &dyn Fn(f64) -> T) -> T {
+        f(self.into())
+    }
+
+    fn pow(self, exp: usize) -> Self {
+        IFloat {
+            value: self.value.pow(exp as u32),
+        }
+    }
+
+    fn log10(self) -> Self {
+        let fval: f64 = self.into();
+        IFloat::from(fval.log10())
+    }
+
+    fn abs(self) -> Self {
+        IFloat {
+            value: self.value.abs(),
+        }
+    }
+}
+
+impl From<f64> for IFloat {
+    fn from(x: f64) -> IFloat {
+        IFloat {
+            value: (x * MAX as f64) as IFloatType,
+        }
+    }
+}
+
+impl From<usize> for IFloat {
+    fn from(x: usize) -> IFloat {
+        IFloat {
+            value: ((x as f64) * MAX as f64) as IFloatType,
+        }
+    }
+}
+
+impl From<u32> for IFloat {
+    fn from(x: u32) -> IFloat {
+        IFloat {
+            value: ((x as f64) * MAX as f64) as IFloatType,
+        }
+    }
+}
+
+impl Into<f64> for IFloat {
+    fn into(self) -> f64 {
+        (self.value as f64) / MAX as f64
+    }
+}
+
+impl Into<f32> for IFloat {
+    fn into(self) -> f32 {
+        (self.value as f32) / MAX as f32
+    }
+}
+
+impl Display for IFloat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let fval: f64 = (*self).into();
+        let precision = f.precision().unwrap_or(16);
+        write!(f, "{:.*}", precision, fval)?;
+        Ok(())
+    }
+}
+
+impl Add for IFloat {
+    type Output = IFloat;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        IFloat {
+            value: self.value + rhs.value,
+        }
+    }
+}
+
+impl AddAssign for IFloat {
+    fn add_assign(&mut self, rhs: Self) {
+        self.value += rhs.value;
+    }
+}
+
+impl Sub for IFloat {
+    type Output = IFloat;
+
+    fn sub(self, rhs: Self) -> Self::Output {
+        IFloat {
+            value: self.value - rhs.value,
+        }
+    }
+}
+
+impl Mul for IFloat {
+    type Output = IFloat;
+
+    fn mul(self, rhs: Self) -> Self::Output {
+        IFloat {
+            value: (((self.value as i128) * (rhs.value as i128)) >> SCALE_FACTOR) as IFloatType,
+        }
+    }
+}
+
+impl Div for IFloat {
+    type Output = IFloat;
+
+    fn div(self, rhs: Self) -> Self::Output {
+        IFloat {
+            value: (((self.value as i128) << SCALE_FACTOR) / rhs.value as i128) as IFloatType,
+        }
+    }
+}
+
+impl PartialEq for IFloat {
+    fn eq(&self, other: &Self) -> bool {
+        self.value == other.value
+    }
+}
+
+impl PartialOrd for IFloat {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        self.value.partial_cmp(&other.value)
+    }
+}
+
+impl std::iter::Sum for IFloat {
+    fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
+        iter.reduce(|a, b| a + b).unwrap_or(ZERO.clone())
+    }
+}
+
+type Position = (IFloat, IFloat);
+
+const PI: IFloat = IFloat {
+    value: (std::f64::consts::PI * MAX as f64) as IFloatType,
+};
+const ZERO: IFloat = IFloat {
+    value: (0.0 * MAX as f64) as IFloatType,
+};
+
+fn dist(a: &Position, b: &Position) -> IFloat {
     let dx = a.0 - b.0;
     let dy = a.1 - b.1;
     dx.hypot(dy)
     // dx.abs() + dy.abs()
+}
+
+#[derive(Clone)]
+struct Bitmask {
+    mask: u64,
+    capacity: usize,
+}
+
+impl Bitmask {
+    fn with_capacity(capacity: usize) -> Bitmask {
+        Bitmask {
+            mask: 0,
+            capacity: capacity,
+        }
+    }
+
+    fn new() -> Bitmask {
+        Self::with_capacity(u32::BITS as usize)
+    }
+
+    fn contains(&self, value: usize) -> bool {
+        self.mask & (1 << value) != 0
+    }
+
+    fn into_set(self, value: usize) -> Self {
+        Bitmask {
+            mask: self.mask | (1u64 << value),
+            capacity: self.capacity,
+        }
+    }
+
+    fn into_unset(self, value: usize) -> Self {
+        Bitmask {
+            mask: self.mask & !(1u64 << value),
+            capacity: self.capacity,
+        }
+    }
+
+    fn iter(&self) -> BitmaskIter {
+        BitmaskIter {
+            mask: self.mask,
+            capacity: self.capacity,
+            position: 0,
+            pos_bit: 1,
+        }
+    }
+}
+
+impl From<Range<usize>> for Bitmask {
+    fn from(value: Range<usize>) -> Self {
+        let mut mask = Bitmask::with_capacity(value.end);
+        for i in value {
+            mask.mask |= 1u64 << i;
+        }
+        mask
+    }
+}
+
+struct BitmaskIter {
+    mask: u64,
+    capacity: usize,
+    position: usize,
+    pos_bit: u64,
+}
+
+impl Iterator for BitmaskIter {
+    type Item = usize;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.position >= self.capacity {
+            return None;
+        }
+        while self.mask & self.pos_bit == 0 {
+            self.position += 1;
+            self.pos_bit <<= 1;
+            if self.position >= self.capacity {
+                return None;
+            }
+        }
+        self.position += 1;
+        self.pos_bit <<= 1;
+        Some(self.position - 1)
+    }
 }
 
 struct GridIter {
@@ -66,15 +323,18 @@ impl Iterator for GridIter {
 struct Space {
     bounds: (Position, Position),
     holes: Vec<(Position, Position)>,
-    hole_multiplier: f64,
+    hole_multiplier: IFloat,
 }
 
 impl Space {
     fn new_with_holes(holes: Vec<(Position, Position)>) -> Space {
         Space {
-            bounds: ((0.0, 0.0), (1.0, 1.0)),
+            bounds: (
+                (IFloat::from(ZERO.clone()), IFloat::from(ZERO.clone())),
+                (IFloat::from(1.0), IFloat::from(1.0)),
+            ),
             holes: holes,
-            hole_multiplier: 0.0,
+            hole_multiplier: ZERO.clone(),
         }
     }
 
@@ -86,9 +346,9 @@ impl Space {
         Space::new_with_holes(
             (0..n)
                 .map(|_| {
-                    let length = 0.02;
-                    let center: (f64, f64) = (rand::random(), rand::random());
-                    let angle: f64 = rand::random::<f64>() * std::f64::consts::PI * 2.0;
+                    let length = IFloat::from(0.02);
+                    let center: (IFloat, IFloat) = (IFloat::random(), IFloat::random());
+                    let angle: IFloat = IFloat::random() * PI * IFloat::from(2.0);
                     let (s, c) = angle.sin_cos();
                     let radius = (length * s, length * c);
                     let start = (center.0 + radius.0, center.1 + radius.1);
@@ -103,26 +363,33 @@ impl Space {
         Space::new_with_holes(
             (1..=n)
                 .map(|i| {
-                    let x = i as f64 / (n + 1) as f64;
-                    ((x, 0.35), (x, 0.65))
+                    let x = IFloat::from(i) / IFloat::from(n + 1);
+                    ((x, IFloat::from(0.35)), (x, IFloat::from(0.65)))
                 })
                 .collect(),
         )
     }
 
-    fn new_with_polyhedra_holes(n: usize, gap: f64) -> Space {
+    fn new_with_polyhedra_holes(n: usize, gap: IFloat) -> Space {
         Space::new_with_holes(
             (1..=n)
                 .map(|i| {
-                    let angle_start =
-                        (i as f64 / n as f64) * 2.0 * std::f64::consts::PI + gap / 2.0;
+                    let angle_start = (IFloat::from(i) / IFloat::from(n)) * IFloat::from(2.0) * PI
+                        + gap / IFloat::from(2.0);
                     let (s_a, c_a) = angle_start.sin_cos();
                     let angle_end =
-                        ((i + 1) as f64 / n as f64) * 2.0 * std::f64::consts::PI - gap / 2.0;
+                        (IFloat::from(i + 1) / IFloat::from(n)) * IFloat::from(2.0) * PI
+                            - gap / IFloat::from(2.0);
                     let (s_b, c_b) = angle_end.sin_cos();
                     (
-                        (0.5 + s_a / 4.0, 0.5 + c_a / 4.0),
-                        (0.5 + s_b / 4.0, 0.5 + c_b / 4.0),
+                        (
+                            IFloat::from(0.5) + s_a / IFloat::from(4.0),
+                            IFloat::from(0.5) + c_a / IFloat::from(4.0),
+                        ),
+                        (
+                            IFloat::from(0.5) + s_b / IFloat::from(4.0),
+                            IFloat::from(0.5) + c_b / IFloat::from(4.0),
+                        ),
                     )
                 })
                 .collect(),
@@ -130,25 +397,40 @@ impl Space {
     }
 
     fn new_with_random_holes(n: usize) -> Space {
-        Space::new_with_holes((0..n).map(|_| (rand::random(), rand::random())).collect())
-    }
-
-    fn new_with_star_holes(n: usize) -> Space {
         Space::new_with_holes(
             (0..n)
-                .map(|i| {
-                    let angle = (i as f64 / n as f64) * std::f64::consts::PI;
-                    let (s, c) = angle.sin_cos();
+                .map(|_| {
                     (
-                        (0.5 + s / 2.0, 0.5 + c / 2.0),
-                        (0.5 - s / 2.0, 0.5 - c / 2.0),
+                        (IFloat::random(), IFloat::random()),
+                        (IFloat::random(), IFloat::random()),
                     )
                 })
                 .collect(),
         )
     }
 
-    fn test(&self, start: &Position, end: &Position) -> f64 {
+    fn new_with_star_holes(n: usize) -> Space {
+        Space::new_with_holes(
+            (0..n)
+                .map(|i| {
+                    let angle = (IFloat::from(i) / IFloat::from(n)) * PI;
+                    let (s, c) = angle.sin_cos();
+                    (
+                        (
+                            IFloat::from(0.5) + s / IFloat::from(2.0),
+                            IFloat::from(0.5) + c / IFloat::from(2.0),
+                        ),
+                        (
+                            IFloat::from(0.5) - s / IFloat::from(2.0),
+                            IFloat::from(0.5) - c / IFloat::from(2.0),
+                        ),
+                    )
+                })
+                .collect(),
+        )
+    }
+
+    fn single_travel_test(&self, start: &Position, end: &Position) -> IFloat {
         let mut travel_dist = dist(start, end);
         for (hole_a, hole_b) in self.holes.iter() {
             let a_dist = dist(start, hole_a);
@@ -157,10 +439,10 @@ impl Space {
                 a_dist + dist(hole_b, end)
             } else {
                 b_dist + dist(hole_a, end)
-            } + if self.hole_multiplier > f64::default() {
+            } + if self.hole_multiplier > ZERO.clone() {
                 dist(hole_a, hole_b)
             } else {
-                f64::default()
+                IFloat::from(ZERO.clone())
             };
             if hole_dist < travel_dist {
                 travel_dist = hole_dist;
@@ -169,8 +451,8 @@ impl Space {
         travel_dist
     }
 
-    fn test_with_multi_travel(&self, start: &Position, end: &Position) -> f64 {
-        let mut traveled = 0.0;
+    fn greedy_test(&self, start: &Position, end: &Position) -> IFloat {
+        let mut traveled = ZERO.clone();
         let mut current_pos = start.clone();
         let mut direct = dist(&current_pos, end);
         for _ in 0..self.holes.len() + 1 {
@@ -178,10 +460,10 @@ impl Space {
                 .holes
                 .iter()
                 .map(|hole| {
-                    let hole_travel = if self.hole_multiplier > 0.0 {
-                        dist(&hole.0, &hole.1) * self.hole_multiplier
+                    let hole_travel = if self.hole_multiplier > ZERO.clone() {
+                        dist(&hole.0, &hole.1) * IFloat::from(self.hole_multiplier)
                     } else {
-                        0.0
+                        ZERO
                     };
                     [
                         (
@@ -197,10 +479,10 @@ impl Space {
                     ]
                 })
                 .flatten()
-                .filter(|(travel, new_dist, _)| travel + new_dist < direct)
+                .filter(|(travel, new_dist, _)| *travel + *new_dist < direct)
                 .min_by(|(travel_a, new_dist_a, _), (travel_b, new_dist_b, _)| {
-                    (travel_a + new_dist_a)
-                        .partial_cmp(&(travel_b + new_dist_b))
+                    (*travel_a + *new_dist_a)
+                        .partial_cmp(&(*travel_b + *new_dist_b))
                         .unwrap()
                 }) {
                 None => {
@@ -217,29 +499,32 @@ impl Space {
         traveled
     }
 
-    fn exhaustive_test(&self, start: &Position, end: &Position) -> f64 {
+    fn exhaustive_test(&self, start: &Position, end: &Position) -> IFloat {
         let direct_distance = dist(start, end);
-        let mut fringe = VecDeque::from(vec![(
-            0.0,
+        let mut fringe = VecDeque::with_capacity(self.holes.len() * self.holes.len() * 2);
+        fringe.push_back((
+            ZERO.clone(),
             direct_distance,
-            start.clone()
-        )]);
+            start.clone(),
+            Bitmask::from(0..self.holes.len()),
+        ));
         let mut min_distance = direct_distance;
         while !fringe.is_empty() {
-            let (traveled, direct_dist, pos) = fringe.pop_front().unwrap();
+            let (traveled, direct_dist, pos, untraversed_mask) = fringe.pop_front().unwrap();
             if traveled > min_distance {
                 continue;
             } else {
                 min_distance = min_distance.min(traveled + direct_dist);
-                for hole in self.holes.iter() {
+                for i in untraversed_mask.iter() {
+                    let hole = self.holes[i];
                     for (entrance, exit) in [(&hole.0, &hole.1), (&hole.1, &hole.0)] {
                         let new_travel_dist = traveled + dist(entrance, &pos);
                         if new_travel_dist < min_distance {
                             let new_direct_dist = dist(exit, &end);
                             fringe.insert(
                                 match fringe
-                                    .binary_search_by(|(_, d_dist, _)| {
-                                        d_dist.partial_cmp(&&new_direct_dist).unwrap()
+                                    .binary_search_by_key(&&new_direct_dist, |(_, d_dist, _, _)| {
+                                        d_dist
                                     }) {
                                     Ok(x) => x,
                                     Err(x) => x,
@@ -248,7 +533,8 @@ impl Space {
                                     new_travel_dist,
                                     new_direct_dist,
                                     exit.clone(),
-                                )
+                                    untraversed_mask.clone().into_unset(i),
+                                ),
                             );
                         }
                     }
@@ -258,53 +544,60 @@ impl Space {
         min_distance
     }
 
-    fn permute<T>(&self, grid_density: usize, random_placement: &mut Option<T>) -> f64
+    fn permute<T>(&self, grid_density: usize, random_placement: &mut Option<T>) -> IFloat
     where
         T: Rng,
     {
-        let cell_width = (self.bounds.1 .0 - self.bounds.0 .0) / grid_density as f64;
-        let cell_height = (self.bounds.1 .1 - self.bounds.0 .1) / grid_density as f64;
+        let float_density = IFloat::from(grid_density);
+        let cell_width = (self.bounds.1 .0 - self.bounds.0 .0) / float_density;
+        let cell_height = (self.bounds.1 .1 - self.bounds.0 .1) / float_density;
         let offsets = GridIter::between(&(0, 0), &(grid_density, grid_density))
             .map(|_| match random_placement {
-                None => (cell_width / 2f64, cell_height / 2f64),
+                None => (
+                    cell_width / IFloat::from(2.0),
+                    cell_height / IFloat::from(2.0),
+                ),
                 Some(rng) => (
-                    rng.gen::<f64>() * cell_width,
-                    rng.gen::<f64>() * cell_height,
+                    IFloat::random_with_rng(rng) * cell_width,
+                    IFloat::random_with_rng(rng) * cell_height,
                 ),
             })
             .collect::<Vec<Position>>();
-        let total: f64 = GridIter::between(&(0, 0), &(grid_density, grid_density))
+        let mut total: IFloat = GridIter::between(&(0, 0), &(grid_density, grid_density))
             .collect::<Vec<_>>()
             .par_iter()
             .enumerate()
             .map(|(si, (start_x, start_y))| {
                 let start = (
-                    self.bounds.0 .0 + cell_width * *start_x as f64 + offsets[si].0,
-                    self.bounds.0 .1 + cell_height * *start_y as f64 + offsets[si].1,
+                    self.bounds.0 .0 + cell_width * IFloat::from(*start_x) + offsets[si].0,
+                    self.bounds.0 .1 + cell_height * IFloat::from(*start_y) + offsets[si].1,
                 );
                 GridIter::between(&(0, 0), &(grid_density, grid_density))
                     .enumerate()
                     .map(|(ei, (end_x, end_y))| {
                         let end = (
-                            self.bounds.0 .0 + cell_width * end_x as f64 + offsets[ei].0,
-                            self.bounds.0 .1 + cell_height * end_y as f64 + offsets[ei].1,
+                            self.bounds.0 .0 + cell_width * IFloat::from(end_x) + offsets[ei].0,
+                            self.bounds.0 .1 + cell_height * IFloat::from(end_y) + offsets[ei].1,
                         );
-                        self.test_with_multi_travel(&start, &end)
+                        self.exhaustive_test(&start, &end)
                     })
-                    .sum::<f64>()
+                    .sum::<IFloat>()
             })
             .sum();
-        total / grid_density.pow(4) as f64
+        for _ in 0..4 {
+            total = total / float_density;
+        }
+        total
     }
 
     fn gradient_descent(
         &mut self,
         density: usize,
         random_placement: bool,
-        temperature: f64,
-        epsilon: f64,
+        temperature: IFloat,
+        epsilon: IFloat,
         seed: Option<u64>,
-    ) -> (f64, u64, Vec<(Position, Position)>) {
+    ) -> (IFloat, u64, Vec<(Position, Position)>) {
         let mut otherself = self.clone();
         let seed = seed.unwrap_or_else(|| rand::random::<u64>());
         let get_rng = || {
@@ -315,22 +608,24 @@ impl Space {
             }
         };
         let neutral = otherself.permute::<ChaCha8Rng>(density, &mut get_rng());
+        // println!("neutral:  {neutral}");
         let gradients = self
             .holes
             .iter_mut()
             .enumerate()
             .map(|(i, hole)| {
-                
-                let mut h = |l: &dyn Fn(&mut ((f64, f64), (f64, f64))) -> &mut f64| {
-                    *l(&mut otherself.holes[i]) = *l(hole) + epsilon;
-                    let gradient = otherself.permute::<ChaCha8Rng>(density, &mut get_rng());
-                    *l(&mut otherself.holes[i]) = *l(hole);
-                    gradient
-                };
+                let mut h =
+                    |l: &dyn Fn(&mut ((IFloat, IFloat), (IFloat, IFloat))) -> &mut IFloat| {
+                        *l(&mut otherself.holes[i]) = *l(hole) + epsilon;
+                        let gradient = otherself.permute::<ChaCha8Rng>(density, &mut get_rng());
+                        // println!("gradient: {gradient}");
+                        *l(&mut otherself.holes[i]) = *l(hole);
+                        gradient
+                    };
 
                 let g = |gradient| {
                     if neutral == gradient {
-                        0.0
+                        ZERO.clone()
                     } else {
                         (neutral - gradient) / epsilon
                     }
@@ -350,8 +645,8 @@ impl Space {
                 };
 
                 (
-                    f(h(&|x| &mut x.0.0), h(&|x| &mut x.0.1)),
-                    f(h(&|x| &mut x.1.0), h(&|x| &mut x.1.1)),
+                    f(h(&|x| &mut x.0 .0), h(&|x| &mut x.0 .1)),
+                    f(h(&|x| &mut x.1 .0), h(&|x| &mut x.1 .1)),
                 )
             })
             .collect::<Vec<_>>();
@@ -408,12 +703,12 @@ impl Space {
                 self.bounds.1 .1 - self.bounds.0 .1,
             );
             let start_pixel = (
-                (((start.0 - self.bounds.0 .0) / bound_width) * dims.0 as f64) as f32,
-                (((start.1 - self.bounds.0 .1) / bound_height) * dims.1 as f64) as f32,
+                (((start.0 - self.bounds.0 .0) / bound_width) * IFloat::from(dims.0)).into(),
+                (((start.1 - self.bounds.0 .1) / bound_height) * IFloat::from(dims.1)).into(),
             );
             let end_pixel = (
-                (((end.0 - self.bounds.0 .0) / bound_width) * dims.0 as f64) as f32,
-                (((end.1 - self.bounds.0 .1) / bound_height) * dims.1 as f64) as f32,
+                (((end.0 - self.bounds.0 .0) / bound_width) * IFloat::from(dims.0)).into(),
+                (((end.1 - self.bounds.0 .1) / bound_height) * IFloat::from(dims.1)).into(),
             );
             draw_filled_circle_mut(
                 &mut img,
@@ -470,7 +765,7 @@ fn train_and_save(
     let mut logfile = File::create(format!("output/{}.log", name))?;
 
     let mut timestamp = SystemTime::now();
-    let mut loss_eval_window = VecDeque::with_capacity(loss_window_size + 1);
+    let mut loss_eval_window: VecDeque<f64> = VecDeque::with_capacity(loss_window_size + 1);
 
     for i in 0.. {
         if max_iters.map(|iters| i > iters).unwrap_or(false) {
@@ -485,14 +780,19 @@ fn train_and_save(
                     .permute::<ChaCha8Rng>(epoch_size, &mut Some(SeedableRng::seed_from_u64(seed))),
                 seed,
                 (0..space.holes.len())
-                    .map(|_| ((0.0, 0.0), (0.0, 0.0)))
+                    .map(|_| ((ZERO.clone(), ZERO.clone()), (ZERO.clone(), ZERO.clone())))
                     .collect(),
             )
         } else {
-            let (loss, seed, gradients) =
-                space.gradient_descent(epoch_size, true, learn_rate, 1e-8, None);
+            let (loss, seed, gradients) = space.gradient_descent(
+                epoch_size,
+                true,
+                learn_rate.into(),
+                IFloat::from(1e-8),
+                None,
+            );
 
-            loss_eval_window.push_back(loss.log10());
+            loss_eval_window.push_back(Into::<f64>::into(loss).log10());
             if loss_eval_window.len() > loss_window_size {
                 loss_eval_window.pop_front();
             }
@@ -503,7 +803,12 @@ fn train_and_save(
 
             let gradient_magnitudes = gradients
                 .iter()
-                .map(|(a, b)| [dist(a, &(0.0, 0.0)).log10(), dist(b, &(0.0, 0.0)).log10()])
+                .map(|(a, b)| {
+                    [
+                        dist(a, &(ZERO.clone(), ZERO.clone())).log10(),
+                        dist(b, &(ZERO.clone(), ZERO.clone())).log10(),
+                    ]
+                })
                 .flatten()
                 .collect::<Vec<_>>();
 
@@ -564,11 +869,45 @@ fn train_and_save(
     Ok(())
 }
 
-fn main() {
-    let space = Space::new_with_aligned_holes(3);
-    let result = space.exhaustive_test(&(0.9, 0.9), &(0.1, 0.1));
-    println!("{result}");
+fn main() -> std::io::Result<()> {
+    for (mut space, name) in vec![(Space::new_with_random_holes(5), "quintouple_2")] {
+        train_and_save(
+            &mut space,
+            name.to_string(),
+            None,
+            0.1,
+            48,
+            120,
+            Some(FfmpegOptions { framerate: 60 }),
+        )?;
+    }
+    Ok(())
 }
+
+// fn main() {
+//     let space = Space::new_with_aligned_holes(3);
+//     // space.exhaustive_test(&(0.1.into(), 0.1.into()), &(0.9.into(), 0.9.into()));
+//     let mut logfile = File::create(format!("output/opt5_perf.log")).unwrap();
+//     for i in 32..=64 {
+//         let start = SystemTime::now();
+//         let result = space.permute::<ChaCha8Rng>(i, &mut None);
+//         let duration = SystemTime::now().duration_since(start).unwrap();
+//         println!("{i}: {:.3}s, {result:.6}", duration.as_secs_f64());
+//         writeln!(logfile, "{i},{},{result}", duration.as_millis()).unwrap();
+//     }
+// }
+
+// fn main() {
+//     let mut logfile = File::create(format!("output/holecount_perf.log")).unwrap();
+//     for i in 1..=8 {
+//         let space = Space::new_with_aligned_holes(i);
+//         let start = SystemTime::now();
+//         let result = space.permute::<ChaCha8Rng>(64, &mut None);
+//         let duration = SystemTime::now().duration_since(start).unwrap();
+//         println!("{i}: {:.3}s, {result:.6}", duration.as_secs_f64());
+//         writeln!(logfile, "{i},{},{result}", duration.as_millis()).unwrap();
+//     }
+// }
 
 // fn main() -> std::io::Result<()> {
 //     for (mut space, name) in vec![
